@@ -30,11 +30,10 @@ main :: proc(){
         mem.tracking_allocator_init(&track, context.allocator)
         context.allocator = mem.tracking_allocator(&track)
 
-        defer
-        {
+        defer {
             if len(track.allocation_map) > 0 {
                 log.errorf("=== %v allocations not freed ===", len(track.allocation_map))
-                for _, entry in track.allocations_map {
+                for _, entry in track.allocation_map {
                     log.debugf("%v bytes @ %v", entry.size, entry.location)
                 }
             }
