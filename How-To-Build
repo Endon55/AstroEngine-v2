@@ -1,0 +1,13 @@
+you will likely need to update your version of glfw on the host system, ImGui requires at least glfw version 3.4.
+
+To do this download the source
+cd to directory, add a folder named build
+run--
+cmake -DBUILD_SHARED_LIBS=ON -S . -B build
+cmake --build build
+cd build
+sudo make install
+
+add this to  bashrc
+export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+

@@ -25,6 +25,7 @@ Resource :: union {
     vk.Semaphore,
     vk.Buffer,
     vk.DeviceMemory,
+    Allocated_Image,
 
     vma.Allocator,
 
@@ -91,6 +92,8 @@ Resource :: union {
                 vk.DestroyBuffer(self.device, res, nil)
             case vk.DeviceMemory:
                 vk.FreeMemory(self.device, res, nil)
+            case Allocated_Image:
+                destroy_image(res)
             case vma.Allocator:
                 vma.DestroyAllocator(res)
             }

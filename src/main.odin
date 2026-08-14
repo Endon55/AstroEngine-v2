@@ -3,7 +3,8 @@ package astro
 import "core:log"
 import "core:mem"
 
-
+import "vendor:glfw"
+import "core:fmt"
 
 
 start::proc() -> (ok: bool) {
@@ -22,6 +23,11 @@ start::proc() -> (ok: bool) {
 
 
 main :: proc(){
+
+        
+    fmt.println("GLFW Version: ", glfw.GetVersionString())
+
+
     when ODIN_DEBUG {
         context.logger = log.create_console_logger(opt = {.Level, .Terminal_Color})
         defer log.destroy_console_logger(context.logger)

@@ -7,10 +7,11 @@ import vk "vendor:vulkan"
 import "base:runtime"
 import "core:math"
 
-
-import "../libs/vkb"
-
-import vma "../libs/odin-vma"
+import "libs:vkb"
+import vma "libs:odin-vma"
+import im "libs:odin-imgui"
+import im_glfw "libs:odin-imgui/backends/glfw"
+import im_vk "libs:odin-imgui/backends/vulkan"
 
 
 TITLE :: "Astro Engine v2"
@@ -48,6 +49,15 @@ Engine::struct {
     main_deletion_queue: Deletion_Queue,
 
     vma_allocator: vma.Allocator,
+    draw_image: Allocated_Image,
+
+    draw_extent: vk.Extent2D,
+    gradient_pipeline: vk.Pipeline,
+    gradient_pipeline_layout: vk.PipelineLayout,
+
+    global_descriptor_allocator: Descriptor_Allocator,
+    draw_image_descriptors: vk.DescriptorSet,
+    draw_image_descriptor_layout: vk.DescriptorSetLayout,
 }
 
 Frame_Data :: struct {
@@ -88,8 +98,9 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
     engine_init_swapchain(self) or_return
     engine_init_commands(self) or_return
     engine_init_sync_structures(self) or_return
-
-
+    engine_init_descriptors(self) or_return
+    engine_init_pipelines(self) or_return
+    engine_init_imgui(self) or_return
     self.is_initialized = true
 
     return true
@@ -230,9 +241,10 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
     vma_create_info: vma.AllocatorCreateInfo = {
         flags = {.BUFFER_DEVICE_ADDRESS},
         instance = self.vk_instance,
-        physicalDevice = self.vk_device,
+        physicalDevice = self.vk_physical_device,
+        device = self.vk_device,
         pVulkanFunctions = &vma_vulkan_functions,
-        vulkanApiVersion = api_version
+        vulkanApiVersion = api_version,
     }
 
 
@@ -245,6 +257,45 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
 
 engine_init_swapchain :: proc(self: ^Engine) -> (ok: bool){
     engine_create_swapchain(self, self.window_extent) or_return
+    draw_image_extent := vk.Extent3D {
+        width = self.window_extent.width,
+        height = self.window_extent.height,
+        depth = 1,
+    }
+    self.draw_image.image_format = .R16G16B16A16_SFLOAT
+    self.draw_image.image_extent = draw_image_extent
+    self.draw_image.allocator = self.vma_allocator
+    self.draw_image.device = self.vk_device
+
+    draw_image_usages := vk.ImageUsageFlags {
+        .TRANSFER_SRC,
+        .TRANSFER_DST,
+        .STORAGE,
+        .COLOR_ATTACHMENT,
+    }
+    
+    rimg_info := image_create_info(self.draw_image.image_format, draw_image_usages, draw_image_extent,)
+    
+    rimg_allocinfo := vma.AllocationCreateInfo {
+        usage = .GPU_ONLY,
+        requiredFlags = {.DEVICE_LOCAL,},
+    }
+    vk_check(vma.CreateImage(self.vma_allocator, rimg_info, rimg_allocinfo, &self.draw_image.image, &self.draw_image.allocation, nil)) or_return
+    defer if !ok {
+        vma.DestroyImage(self.vma_allocator, self.draw_image.image, nil)
+    }
+
+    rview_info := imageview_create_info(self.draw_image.image_format, self.draw_image.image, {.COLOR},)
+
+    vk_check(vk.CreateImageView(self.vk_device, &rview_info, nil, &self.draw_image.image_view)) or_return
+    defer if !ok {
+        vk.DestroyImageView(self.vk_device, self.draw_image.image_view, nil)
+    }
+
+    deletion_queue_push(&self.main_deletion_queue, self.draw_image)
+
+
+
     return true
 }
 
@@ -392,20 +443,27 @@ engine_draw ::proc(self: ^Engine) -> (ok: bool){
     
     cmd_begin_info := command_buffer_begin_info({.ONE_TIME_SUBMIT})
 
+
+    self.draw_extent.width = self.draw_image.image_extent.width
+    self.draw_extent.height = self.draw_image.image_extent.height
+
+
     vk_check(vk.BeginCommandBuffer(cmd, &cmd_begin_info)) or_return
     
-    transition_image(cmd, self.swapchain_images[swapchain_image_index], .UNDEFINED, .GENERAL)
 
-    flash := abs(math.sin(f32(self.frame_number) / 120.0))
-    clear_value := vk.ClearColorValue {
-        float32 = {0.0, 0.0, flash, 1.0},
-    }
+    engine_draw_background(self, cmd) or_return
 
-    clear_range := image_subresource_range({.COLOR})
 
-    vk.CmdClearColorImage(cmd, self.swapchain_images[swapchain_image_index], .GENERAL, &clear_value, 1, &clear_range)
+    transition_image(cmd, self.draw_image.image, .GENERAL, .TRANSFER_SRC_OPTIMAL)
 
-    transition_image(cmd, self.swapchain_images[swapchain_image_index], .GENERAL, .PRESENT_SRC_KHR)
+    transition_image(cmd, self.swapchain_images[swapchain_image_index], .UNDEFINED, .TRANSFER_DST_OPTIMAL)
+
+    copy_image_to_image(cmd, self.draw_image.image, self.swapchain_images[swapchain_image_index], self.draw_extent, self.swapchain_extent)
+
+    transition_image(cmd, self.swapchain_images[swapchain_image_index], .TRANSFER_DST_OPTIMAL, .COLOR_ATTACHMENT_OPTIMAL,)
+
+
+    transition_image(cmd, self.swapchain_images[swapchain_image_index], .COLOR_ATTACHMENT_OPTIMAL, .PRESENT_SRC_KHR,)
 
     vk_check(vk.EndCommandBuffer(cmd)) or_return
 
@@ -443,9 +501,16 @@ engine_run :: proc(self: ^Engine) -> (ok: bool) {
 
         if self.stop_rendering {
             glfw.WaitEvents()
-            continue
+            continue loop
         }
+        
+        //im_glfw.NewFrame()
+        //im_vk.NewFrame()
+        //im.NewFrame()
 
+        //im.ShowDemoWindow()
+
+        //im.Render()
         engine_draw(self) or_return
 
     }
@@ -457,3 +522,185 @@ engine_run :: proc(self: ^Engine) -> (ok: bool) {
 engine_get_current_frame :: #force_inline proc(self: ^Engine) -> ^Frame_Data #no_bounds_check {
     return &self.frames[self.frame_number % FRAME_OVERLAP]
 }
+
+@(require_results)
+engine_draw_background :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool) {
+
+    flash := abs(math.sin(f32(self.frame_number) / 120.0))
+    clear_value := vk.ClearColorValue {
+        float32 = {0.0, 0.0, flash, 1.0},
+    }
+
+    clear_range := image_subresource_range({.COLOR})
+
+   //vk.CmdClearColorImage(cmd, self.draw_image.image, .GENERAL, &clear_value, 1, &clear_range)
+
+
+   vk.CmdBindPipeline(cmd, .COMPUTE, self.gradient_pipeline)
+   vk.CmdBindDescriptorSets(cmd, .COMPUTE, self.gradient_pipeline_layout, 0, 1, &self.draw_image_descriptors, 0, nil,)
+
+    vk.CmdDispatch(cmd, u32(math.ceil_f32(f32(self.draw_extent.width) / 16.0)), u32(math.ceil_f32(f32(self.draw_extent.height) / 16.0)), 1,)
+
+
+
+ return true
+}
+
+
+engine_init_descriptors:: proc(self: ^Engine) -> (ok:bool) {
+    sizes := []Pool_Size_Ratio{{.STORAGE_IMAGE, 1}}
+
+    descriptor_allocator_init_pool(&self.global_descriptor_allocator, self.vk_device, 10, sizes) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.global_descriptor_allocator.pool)
+
+    {
+        builder: Descriptor_Layout_Builder
+        descriptor_layout_builder_init(&builder, self.vk_device)
+        descriptor_layout_builder_add_binding(&builder, 0, .STORAGE_IMAGE)
+            self.draw_image_descriptor_layout = descriptor_layout_builder_build(&builder, {.COMPUTE}) or_return
+    }
+    deletion_queue_push(&self.main_deletion_queue, self.draw_image_descriptor_layout)
+
+    self.draw_image_descriptors = descriptor_allocator_allocate(&self.global_descriptor_allocator, self.vk_device, &self.draw_image_descriptor_layout,) or_return
+    
+    img_info := vk.DescriptorImageInfo {
+        imageLayout = .GENERAL,
+        imageView = self.draw_image.image_view,
+    }
+
+    draw_image_write := vk.WriteDescriptorSet{
+        sType = .WRITE_DESCRIPTOR_SET,
+        dstBinding = 0,
+        dstSet = self.draw_image_descriptors,
+        descriptorCount = 1,
+        descriptorType = .STORAGE_IMAGE,
+        pImageInfo = &img_info,
+    }
+
+    vk.UpdateDescriptorSets(self.vk_device, 1, &draw_image_write, 0, nil)
+
+    return true
+
+}
+
+engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) {
+    engine_init_background_pipelines(self) or_return
+    return true
+}
+
+engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
+
+    compute_layout := vk.PipelineLayoutCreateInfo {
+        sType = .PIPELINE_LAYOUT_CREATE_INFO,
+        pSetLayouts = &self.draw_image_descriptor_layout,
+        setLayoutCount = 1,
+    }
+
+    vk_check(vk.CreatePipelineLayout(self.vk_device, &compute_layout, nil, &self.gradient_pipeline_layout)) or_return
+
+    GRADIENT_COMP_SPV :: #load("./../shaders/compiled/gradient.comp.spv")
+    gradient_shader := create_shader_module(self.vk_device, GRADIENT_COMP_SPV) or_return
+    defer vk.DestroyShaderModule(self.vk_device, gradient_shader, nil)
+
+    stage_info := vk.PipelineShaderStageCreateInfo {
+        sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+        stage = {.COMPUTE},
+        module = gradient_shader,
+        pName = "main",
+    }
+
+    compute_pipeline_create_info := vk.ComputePipelineCreateInfo {
+        sType = .COMPUTE_PIPELINE_CREATE_INFO,
+        layout = self.gradient_pipeline_layout,
+        stage = stage_info,
+    }
+
+    vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &compute_pipeline_create_info, nil, &self.gradient_pipeline)) or_return
+
+
+    deletion_queue_push(&self.main_deletion_queue, self.gradient_pipeline_layout)
+    deletion_queue_push(&self.main_deletion_queue, self.gradient_pipeline)
+
+
+    return true
+}
+
+
+engine_init_imgui :: proc(self: ^Engine) -> (ok: bool) {
+   //  im.CHECKVERSION()
+   //
+   // pool_sizes := []vk.DescriptorPoolSize {
+   //      {.SAMPLER, 1000},
+   //      {.COMBINED_IMAGE_SAMPLER, 1000},
+   //      {.SAMPLED_IMAGE, 1000},
+   //      {.STORAGE_IMAGE, 1000},
+   //      {.UNIFORM_TEXEL_BUFFER, 1000},
+   //      {.STORAGE_TEXEL_BUFFER, 1000},
+   //      {.UNIFORM_BUFFER, 1000},
+   //      {.STORAGE_BUFFER, 1000},
+   //      {.UNIFORM_BUFFER_DYNAMIC, 1000},
+   //      {.STORAGE_BUFFER_DYNAMIC, 1000},
+   //      {.INPUT_ATTACHMENT, 1000},
+   //  }
+   //  pool_info := vk.DescriptorPoolCreateInfo {
+   //      sType = .DESCRIPTOR_POOL_CREATE_INFO,
+   //      flags = {.FREE_DESCRIPTOR_SET},
+   //      maxSets = 1000,
+   //      poolSizeCount = u32(len(pool_sizes)),
+   //      pPoolSizes = raw_data(pool_sizes),
+   //  }
+   //
+   //  imgui_pool: vk.DescriptorPool
+   //  vk_check(vk.CreateDescriptorPool(self.vk_device, &pool_info, nil, &imgui_pool)) or_return
+   //
+   //  im.CreateContext()
+   //  defer if !ok {im.DestroyContext()}
+   //
+   //  im_glfw.InitForVulkan(self.window, install_callbacks = true) or_return
+   //  defer if !ok {im_glfw.Shutdown()}
+   //
+   //  pipeline_info := im_vk.PipelineInfo {
+   //      PipelineRenderingCreateInfo = {
+   //          sType = .PIPELINE_RENDERING_CREATE_INFO,
+   //          colorAttachmentCount = 1,
+   //          pColorAttachmentFormats = &self.swapchain_format,
+   //      },
+   //      MSAASamples = {._1},
+   //  }
+   //
+   //  init_info := im_vk.InitInfo {
+   //      ApiVersion = self.vkb.instance.api_version,
+   //      Instance = self.vk_instance,
+   //      PhysicalDevice = self.vk_physical_device,
+   //      Device = self.vk_device,
+   //      Queue = self.graphics_queue,
+   //      DescriptorPool = imgui_pool,
+   //      MinImageCount = 3,
+   //      ImageCount = 3,
+   //      UseDynamicRendering = true,
+   //      PipelineInfoMain = pipeline_info,
+   //  }
+   //
+   //  im_vk.LoadFunctions(self.vkb.instance.api_version, proc "c" (function_name: cstring, user_data: rawptr) -> vk.ProcVoidFunction {
+   //      engine := cast(^Engine)user_data
+   //      return vk.GetInstanceProcAddr(engine.vk_instance, function_name)
+   //  }, self,) or_return
+   //  im_vk.Init(&init_info) or_return
+   //  defer if !ok {im_vk.Shutdown()}
+   //
+   //  im_vk_shutdown :: proc() {
+   //      im_vk.Shutdown()
+   // }
+   //
+   //  im_glfw_shutdown :: proc() {
+   //      im_glfw.Shutdown()
+   //  }
+   //
+   //
+   //  deletion_queue_push(&self.main_deletion_queue, imgui_pool)
+   //  deletion_queue_push(&self.main_deletion_queue, im_vk_shutdown)
+   //  deletion_queue_push(&self.main_deletion_queue, im_glfw_shutdown)
+   //
+    return true
+}
+
