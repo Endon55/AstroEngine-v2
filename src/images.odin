@@ -10,7 +10,7 @@ transition_image :: proc(cmd: vk.CommandBuffer, image: vk.Image, current_layout:
     image_barrier.srcStageMask = {.ALL_COMMANDS}
     image_barrier.srcAccessMask = {.MEMORY_WRITE}
     image_barrier.dstStageMask = {.ALL_COMMANDS}
-    image_barrier.dstAccessMask = {.MEMORY_WRITE}
+    image_barrier.dstAccessMask = {.MEMORY_WRITE, .MEMORY_READ}
 
 
     image_barrier.oldLayout = current_layout
@@ -63,7 +63,7 @@ copy_image_to_image :: proc(cmd: vk.CommandBuffer, source: vk.Image, destination
         srcImage = source,
         srcImageLayout = .TRANSFER_SRC_OPTIMAL,
         dstImage = destination,
-        dstImageLayout = .TRANSFER_SRC_OPTIMAL,
+        dstImageLayout = .TRANSFER_DST_OPTIMAL,
         filter = .LINEAR,
         regionCount = 1,
         pRegions = &blit_region,

@@ -6,7 +6,7 @@ import "core:mem"
 import vk "vendor:vulkan"
 
 
-import vma "../libs/odin-vma"
+import vma "libs:odin-vma"
 
 //just defining a layout for a function pointer, Resource_Proc is a function pointer for a function that takes no arguments and has no return values.
 Resource_Proc :: #type proc()
@@ -16,18 +16,24 @@ Resource :: union {
 
     vk.Pipeline,
     vk.PipelineLayout,
+
     vk.DescriptorPool,
     vk.DescriptorSetLayout,
+
     vk.ImageView,
     vk.Sampler,
+
     vk.CommandPool,
+
     vk.Fence,
     vk.Semaphore,
+
     vk.Buffer,
     vk.DeviceMemory,
-    Allocated_Image,
 
     vma.Allocator,
+    Allocated_Image,
+
 
     }
     Deletion_Queue :: struct {
@@ -70,28 +76,34 @@ Resource :: union {
             switch &res in resource {
             case Resource_Proc:
                 res()
+
             case vk.Pipeline:
                 vk.DestroyPipeline(self.device, res, nil)
             case vk.PipelineLayout:
                 vk.DestroyPipelineLayout(self.device, res, nil)
+
             case vk.DescriptorPool:
                 vk.DestroyDescriptorPool(self.device, res, nil)
             case vk.DescriptorSetLayout:
                 vk.DestroyDescriptorSetLayout(self.device, res, nil)
+
             case vk.ImageView:
                 vk.DestroyImageView(self.device, res, nil)
             case vk.Sampler:
                 vk.DestroySampler(self.device, res, nil)
+
             case vk.CommandPool:
                 vk.DestroyCommandPool(self.device, res, nil) 
             case vk.Fence:
                 vk.DestroyFence(self.device, res, nil)
             case vk.Semaphore:
                 vk.DestroySemaphore(self.device, res, nil)
+
             case vk.Buffer:
                 vk.DestroyBuffer(self.device, res, nil)
             case vk.DeviceMemory:
                 vk.FreeMemory(self.device, res, nil)
+
             case Allocated_Image:
                 destroy_image(res)
             case vma.Allocator:

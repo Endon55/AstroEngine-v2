@@ -1,1 +1,6 @@
 /libs
+src.bin
+Astro2.bin
+/.linker_libs
+/.vscode
+
