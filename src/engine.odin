@@ -61,6 +61,8 @@ Engine::struct {
     gradient_pipeline_layout: vk.PipelineLayout,
     background_effects: [Compute_Effect_Kind]Compute_Effect,
     current_background_effect: Compute_Effect_Kind,
+    triangle_pipeline_layout: vk.PipelineLayout,
+    triangle_pipeline: vk.Pipeline,
 
     global_descriptor_allocator: Descriptor_Allocator,
     draw_image_descriptors: vk.DescriptorSet,
@@ -457,6 +459,48 @@ engine_init_descriptors:: proc(self: ^Engine) -> (ok:bool) {
     return true
 }
 
+engine_init_triangle_pipeline :: proc(self: ^Engine) -> (ok: bool) {
+
+    triangle_frag_shader := create_shader_module(self.vk_device, #load("./../shaders/compiled/colored_triangle.frag.spv")) or_return
+    defer vk.DestroyShaderModule(self.vk_device, triangle_frag_shader, nil)
+
+    triangle_vert_shader := create_shader_module(self.vk_device, #load("./../shaders/compiled/colored_triangle.vert.spv")) or_return
+    defer vk.DestroyShaderModule(self.vk_device, triangle_vert_shader, nil)
+
+    pipeline_layout_info := pipeline_layout_create_info()
+    vk_check(vk.CreatePipelineLayout(self.vk_device, &pipeline_layout_info, nil, &self.triangle_pipeline_layout,)) or_return
+
+    deletion_queue_push(&self.main_deletion_queue, self.triangle_pipeline_layout)
+
+    
+    builder := pipeline_builder_create_default()
+
+    builder.pipeline_layout = self.triangle_pipeline_layout
+
+    pipeline_builder_set_shaders(&builder, triangle_vert_shader, triangle_frag_shader)
+
+    
+    pipeline_builder_set_input_topology(&builder, .TRIANGLE_LIST)
+
+    pipeline_builder_set_polygon_mode(&builder, .FILL)
+
+    pipeline_builder_set_cull_mode(&builder, vk.CullModeFlags_NONE, .CLOCKWISE)
+
+    pipeline_builder_set_multisampling_none(&builder)
+
+    pipeline_builder_disable_blending(&builder)
+
+    pipeline_builder_disable_depth_test(&builder)
+
+    pipeline_builder_set_color_attachment_format(&builder, self.draw_image.image_format)
+    pipeline_builder_set_depth_attachment_format(&builder, .UNDEFINED)
+
+    self.triangle_pipeline = pipeline_builder_build(&builder, self.vk_device) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.triangle_pipeline)
+
+    return true
+}
+
 engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
 
     GRADIENT_COLOR_SPV :: #load("./../shaders/compiled/gradient_color.comp.spv")
@@ -529,6 +573,7 @@ engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) {
     vk_check(vk.CreatePipelineLayout(self.vk_device, &compute_layout, nil, & self.gradient_pipeline_layout)) or_return
 
     engine_init_background_pipelines(self) or_return
+    engine_init_triangle_pipeline(self) or_return
 
     return true
 }
@@ -645,6 +690,37 @@ engine_cleanup :: proc(self: ^Engine) {
     destroy_window(self.window)
 }
 
+engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool) {
+    color_attachment := attachment_info(self.draw_image.image_view, nil, .COLOR_ATTACHMENT_OPTIMAL)
+    render_info := rendering_info(self.draw_extent, &color_attachment, nil)
+    vk.CmdBeginRendering(cmd, &render_info)
+
+    vk.CmdBindPipeline(cmd, .GRAPHICS, self.triangle_pipeline)
+
+    viewport := vk.Viewport {
+        x = 0,
+        y = 0,
+        width = f32(self.draw_extent.width),
+        height = f32(self.draw_extent.height),
+        minDepth = 0.0,
+        maxDepth = 1.0,
+    }
+
+    vk.CmdSetViewport(cmd, 0, 1, &viewport)
+
+    scissor := vk.Rect2D {
+        offset = {x = 0, y = 0},
+        extent = {width = self.draw_extent.width, height = self.draw_extent.height},
+    }
+    vk.CmdSetScissor(cmd, 0, 1, & scissor)
+
+    vk.CmdDraw(cmd, 3, 1, 0, 0)
+
+    vk.CmdEndRendering(cmd)
+
+    return true
+}
+
 @(require_results)
 engine_draw_background :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool) {
     effect := &self.background_effects[self.current_background_effect]
@@ -704,7 +780,11 @@ engine_draw ::proc(self: ^Engine) -> (ok: bool){
     engine_draw_background(self, cmd) or_return
 
 
-    transition_image(cmd, self.draw_image.image, .GENERAL, .TRANSFER_SRC_OPTIMAL)
+    transition_image(cmd, self.draw_image.image, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL)
+
+    engine_draw_geometry(self, cmd) or_return
+    
+    transition_image(cmd, self.draw_image.image, .COLOR_ATTACHMENT_OPTIMAL, .TRANSFER_SRC_OPTIMAL)
 
     transition_image(cmd, self.swapchain_images[swapchain_image_index], .UNDEFINED, .TRANSFER_DST_OPTIMAL)
 
