@@ -3,6 +3,7 @@ package astro
 import "core:log"
 import "base:runtime"
 import "core:math"
+import la "core:math/linalg"
 
 import "vendor:glfw"
 import vk "vendor:vulkan"
@@ -63,10 +64,17 @@ Engine::struct {
     current_background_effect: Compute_Effect_Kind,
     triangle_pipeline_layout: vk.PipelineLayout,
     triangle_pipeline: vk.Pipeline,
+    mesh_pipeline_layout: vk.PipelineLayout,
+    mesh_pipeline: vk.Pipeline,
+    rectangle: GPU_Mesh_Buffers,
 
     global_descriptor_allocator: Descriptor_Allocator,
     draw_image_descriptors: vk.DescriptorSet,
     draw_image_descriptor_layout: vk.DescriptorSetLayout,
+
+    imm_fence: vk.Fence,
+    imm_command_buffer: vk.CommandBuffer,
+    imm_command_pool: vk.CommandPool,
 }
 
 Frame_Data :: struct {
@@ -127,7 +135,7 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
     engine_init_descriptors(self) or_return
     engine_init_pipelines(self) or_return
     engine_init_imgui(self) or_return
-
+    engine_init_default_data(self) or_return
     self.is_initialized = true
 
     return true
@@ -407,6 +415,13 @@ engine_init_commands :: proc(self: ^Engine) -> (ok: bool){
         cmd_alloc_info := command_buffer_allocate_info(frame.command_pool) 
         vk_check(vk.AllocateCommandBuffers(self.vk_device, &cmd_alloc_info, &frame.main_command_buffer)) or_return
     }
+
+    vk_check(vk.CreateCommandPool(self.vk_device, &command_pool_info, nil, &self.imm_command_pool)) or_return
+
+    cmd_alloc_info := command_buffer_allocate_info(self.imm_command_pool)
+    vk_check(vk.AllocateCommandBuffers(self.vk_device, &cmd_alloc_info, &self.imm_command_buffer)) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.imm_command_pool)
+
     return true
 }
 
@@ -420,6 +435,34 @@ engine_init_sync_structures :: proc(self: ^Engine) -> (ok: bool){
 
         vk_check(vk.CreateSemaphore(self.vk_device, &semaphore_create_info, nil, &frame.swapchain_semaphore)) or_return
     }
+
+    vk_check(vk.CreateFence(self.vk_device, &fence_create_info, nil, &self.imm_fence)) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.imm_fence)
+
+    return true
+}
+
+engine_immediate_submit :: proc(self: ^Engine, data: $T, 
+    fn: proc(engine: ^Engine, cmd: vk.CommandBuffer, data: T),) -> (ok: bool,) {
+
+    vk_check(vk.ResetFences(self.vk_device, 1, &self.imm_fence)) or_return
+    vk_check(vk.ResetCommandBuffer(self.imm_command_buffer, {})) or_return
+
+    cmd := self.imm_command_buffer
+
+    cmd_begin_info := command_buffer_begin_info({.ONE_TIME_SUBMIT})
+
+    vk_check(vk.BeginCommandBuffer(cmd, &cmd_begin_info)) or_return
+
+    fn(self, cmd, data)
+
+    vk_check(vk.EndCommandBuffer(cmd)) or_return
+
+    cmd_info := command_buffer_submit_info(cmd)
+    submit_info := submit_info(&cmd_info, nil, nil)
+
+    vk_check(vk.QueueSubmit2(self.graphics_queue, 1, &submit_info, self.imm_fence)) or_return
+    vk_check(vk.WaitForFences(self.vk_device, 1,  &self.imm_fence, true, 9999999999)) or_return
 
     return true
 }
@@ -459,6 +502,55 @@ engine_init_descriptors:: proc(self: ^Engine) -> (ok:bool) {
     return true
 }
 
+engine_init_mesh_pipeline :: proc(self: ^Engine) -> (ok: bool) {
+
+    mesh_frag_shader := create_shader_module(self.vk_device, #load("./../shaders/compiled/colored_triangle.frag.spv")) or_return
+    defer vk.DestroyShaderModule(self.vk_device, mesh_frag_shader, nil)
+
+    mesh_vertex_shader := create_shader_module(self.vk_device, #load("./../shaders/compiled/colored_triangle_mesh.vert.spv")) or_return
+    defer vk.DestroyShaderModule(self.vk_device, mesh_vertex_shader, nil)
+    
+    buffer_range := vk.PushConstantRange {
+        offset = 0,
+        size = size_of(GPU_Draw_Push_Constants),
+        stageFlags = {.VERTEX},
+    }
+
+    pipeline_layout_info := pipeline_layout_create_info()
+    pipeline_layout_info.pPushConstantRanges = &buffer_range
+    pipeline_layout_info.pushConstantRangeCount = 1
+    vk_check(vk.CreatePipelineLayout(self.vk_device, &pipeline_layout_info, nil, &self.mesh_pipeline_layout,)) or_return
+
+    deletion_queue_push(&self.main_deletion_queue, self.mesh_pipeline_layout)
+
+    
+    builder := pipeline_builder_create_default()
+
+    builder.pipeline_layout = self.mesh_pipeline_layout
+
+    pipeline_builder_set_shaders(&builder, mesh_vertex_shader, mesh_frag_shader)
+
+    
+    pipeline_builder_set_input_topology(&builder, .TRIANGLE_LIST)
+
+    pipeline_builder_set_polygon_mode(&builder, .FILL)
+
+    pipeline_builder_set_cull_mode(&builder, vk.CullModeFlags_NONE, .CLOCKWISE)
+
+    pipeline_builder_set_multisampling_none(&builder)
+
+    pipeline_builder_disable_blending(&builder)
+
+    pipeline_builder_disable_depth_test(&builder)
+
+    pipeline_builder_set_color_attachment_format(&builder, self.draw_image.image_format)
+    pipeline_builder_set_depth_attachment_format(&builder, .UNDEFINED)
+
+    self.mesh_pipeline = pipeline_builder_build(&builder, self.vk_device) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.mesh_pipeline)
+
+    return true
+}
 engine_init_triangle_pipeline :: proc(self: ^Engine) -> (ok: bool) {
 
     triangle_frag_shader := create_shader_module(self.vk_device, #load("./../shaders/compiled/colored_triangle.frag.spv")) or_return
@@ -554,6 +646,29 @@ engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
     return true
 }
 
+engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
+    rect_vertices := [4]Vertex {
+        { position = {0.5,-0.5, 0},  color = { 0,0, 0.0, 1.0 }},
+        { position = {0.5,0.5, 0},   color = { 0.5, 0.5, 0.5 ,1.0 }},
+        { position = {-0.5,-0.5, 0}, color = { 1,0, 0.0, 1.0 }},
+        { position = {-0.5,0.5, 0},  color = { 0.0, 1.0, 0.0, 1.0 }},
+    }
+
+    rect_indices := [6]u32 {
+        0, 1, 2,
+        2, 1, 3,
+    }
+    // odinfmt: enable
+
+    self.rectangle = upload_mesh(self, rect_indices[:], rect_vertices[:]) or_return
+
+    // Delete the rectangle data on engine shutdown
+    deletion_queue_push(&self.main_deletion_queue, self.rectangle.index_buffer)
+    deletion_queue_push(&self.main_deletion_queue, self.rectangle.vertex_buffer)
+
+    return true
+}
+
 engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) { 
     
     push_constant := vk.PushConstantRange {
@@ -574,6 +689,7 @@ engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) {
 
     engine_init_background_pipelines(self) or_return
     engine_init_triangle_pipeline(self) or_return
+    engine_init_mesh_pipeline(self) or_return
 
     return true
 }
@@ -695,7 +811,6 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
     render_info := rendering_info(self.draw_extent, &color_attachment, nil)
     vk.CmdBeginRendering(cmd, &render_info)
 
-    vk.CmdBindPipeline(cmd, .GRAPHICS, self.triangle_pipeline)
 
     viewport := vk.Viewport {
         x = 0,
@@ -714,7 +829,20 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
     }
     vk.CmdSetScissor(cmd, 0, 1, & scissor)
 
+    vk.CmdBindPipeline(cmd, .GRAPHICS, self.triangle_pipeline)
     vk.CmdDraw(cmd, 3, 1, 0, 0)
+
+    vk.CmdBindPipeline(cmd, .GRAPHICS, self.mesh_pipeline)
+
+    push_constants := GPU_Draw_Push_Constants {
+        world_matrix = la.MATRIX4F32_IDENTITY,
+        vertex_buffer = self.rectangle.vertex_buffer_address,
+    }
+
+    vk.CmdPushConstants(cmd, self.mesh_pipeline_layout, {.VERTEX}, 0, size_of(GPU_Draw_Push_Constants), &push_constants,)
+
+    vk.CmdBindIndexBuffer(cmd, self.rectangle.index_buffer.buffer, 0, .UINT32)
+    vk.CmdDrawIndexed(cmd, 6, 1, 0, 0, 0)
 
     vk.CmdEndRendering(cmd)
 

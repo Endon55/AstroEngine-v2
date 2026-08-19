@@ -1,0 +1,2 @@
+Launching 'src.bin'
+Failed to create & inject: RenderDoc injection failed: Couldn't connect to target program. Check that it didn't crash or exit during early initialisation, e.g. due to an incorrectly configured working directory.

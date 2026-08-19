@@ -33,7 +33,7 @@ Resource :: union {
 
     vma.Allocator,
     Allocated_Image,
-
+    Allocated_Buffer,
 
     }
     Deletion_Queue :: struct {
@@ -106,6 +106,8 @@ Resource :: union {
 
             case Allocated_Image:
                 destroy_image(res)
+            case Allocated_Buffer:
+                destroy_buffer(res)
             case vma.Allocator:
                 vma.DestroyAllocator(res)
             }
