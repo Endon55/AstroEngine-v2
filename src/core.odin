@@ -5,7 +5,7 @@ import "base:runtime"
 import "core:log"
 import la "core:math/linalg"
 
-import vma "libs:odin-vma"
+import vma "libs:vma"
 import vk "vendor:vulkan"
 
 Allocated_Image :: struct {

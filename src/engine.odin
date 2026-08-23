@@ -9,7 +9,7 @@ import "vendor:glfw"
 import vk "vendor:vulkan"
 
 import "libs:vkb"
-import vma "libs:odin-vma"
+import vma "libs:vma"
 import im "libs:imgui"
 import im_glfw "libs:imgui/backends/glfw"
 import im_vk "libs:imgui/backends/vulkan"
@@ -127,14 +127,21 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
 
     glfw.SetFramebufferSizeCallback(self.window, callback_framebuffer_size)
     glfw.SetWindowIconifyCallback(self.window, callback_window_minimize)
-
+    log.debugf("Initializing Vulkan")
     engine_init_vulkan(self) or_return
+    log.debugf("Initializing Swapchain")
     engine_init_swapchain(self) or_return
+    log.debugf("Initializing Engine Commands")
     engine_init_commands(self) or_return
+    log.debugf("Initializing Sync Structures")
     engine_init_sync_structures(self) or_return
+    log.debugf("Initializing Descriptors")
     engine_init_descriptors(self) or_return
+    log.debugf("Initializing Pipelines")
     engine_init_pipelines(self) or_return
+    log.debugf("Initializing ImGui")
     engine_init_imgui(self) or_return
+    log.debugf("Initializing Vulkan")
     engine_init_default_data(self) or_return
     self.is_initialized = true
 
@@ -146,14 +153,16 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
 
     ta := context.temp_allocator
     runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
-
+    
+    log.debugf("Creating Vulkan Instance")
     instance_builder: vkb.Instance_Builder
     vkb.instance_builder_init(&instance_builder, ta)
 
-    vkb.instance_builder_set_app_name(&instance_builder, "Example App")
+    vkb.instance_builder_set_app_name(&instance_builder, "Astro2")
     vkb.instance_builder_require_api_version(&instance_builder, vk.API_VERSION_1_3)
 
     when ODIN_DEBUG {
+        log.debugf("Adding debug callback to  Vulkan")
         vkb.instance_builder_request_validation_layers(&instance_builder)
 
         default_debug_callback :: proc "system" (message_severity: vk.DebugUtilsMessageSeverityFlagsEXT, message_types: vk.DebugUtilsMessageTypeFlagsEXT,
@@ -166,7 +175,7 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
                 log.warnf("[%v]: %s", message_types, p_callback_data.pMessage)
             } else if .ERROR in message_severity {
                 log.errorf("[%v]: %s", message_types, p_callback_data.pMessage)
-                runtime.debug_trap()
+                //runtime.debug_trap()
             } else {
                 log.infof("[%v]: %s", message_types, p_callback_data.pMessage)
             }
@@ -201,7 +210,7 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
 
     self.vk_instance = self.vkb.instance.vk_instance
 
-
+    log.debugf("Creating window surface")
     vk_check(glfw.CreateWindowSurface(self.vk_instance, self.window, nil, &self.vk_surface),) or_return
     defer if !ok {
         vkb.destroy_surface(&self.vkb.instance, self.vk_surface)
@@ -211,18 +220,21 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
         shaderDrawParameters = true,
     }
     features_12 := vk.PhysicalDeviceVulkan12Features {
+        sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         bufferDeviceAddress = true,
         descriptorIndexing = true,
+        vulkanMemoryModelAvailabilityVisibilityChains = false,
     }
     features_13 := vk.PhysicalDeviceVulkan13Features {
         dynamicRendering = true,
         synchronization2 = true,
     }
-
+    log.debugf("Selecting physical device")
     selector: vkb.Physical_Device_Selector
     vkb.physical_device_selector_init(&selector, self.vkb.instance, ta)
 
     vkb.physical_device_selector_set_minimum_version(&selector, vk.API_VERSION_1_3)
+    // vkb.physical_device_selector_add_required_extension_features(&selector, features_12)
     vkb.physical_device_selector_set_required_features_13(&selector, features_13)
     vkb.physical_device_selector_set_required_features_12(&selector, features_12)
     vkb.physical_device_selector_set_required_features_11(&selector, features_11)
@@ -239,9 +251,20 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
     }
     
     self.vk_physical_device = self.vkb.physical_device.vk_physical_device
+    device_properties := vk.PhysicalDeviceProperties2{
+        sType = .PHYSICAL_DEVICE_PROPERTIES_2
+    }
+    // self.vkb.physical_device.vulkan_1_2_features.vulkanMemoryModelAvailabilityVisibilityChains = false
+    vk.GetPhysicalDeviceProperties2(self.vk_physical_device, &device_properties)
+    str := string(cstring(&device_properties.properties.deviceName[0]))
+    log.debugf("Physical Device Name: %v", str)
 
+    log.debugf("Building vk.device builder")
     device_builder: vkb.Device_Builder
     vkb.device_builder_init(&device_builder, ta)
+    log.debugf("Building vk.device")
+    // vkb.device_builder_add_pnext(&device_builder, &features_12)
+    log.debugf("Extensions: %#v", &self.vkb.physical_device.extended_features_chain)
 
     vkb_device_err := vkb.device_builder_build(&device_builder, &self.vkb.physical_device, &self.vkb.device)
     if vkb_device_err != nil {
@@ -252,7 +275,7 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
         vkb.destroy_device(&self.vkb.device)    
     }
     self.vk_device = self.vkb.device.vk_device
-
+    log.debugf("Setting up deletion queue and allocators")
     deletion_queue_init(&self.main_deletion_queue, self.vk_device)
 
 

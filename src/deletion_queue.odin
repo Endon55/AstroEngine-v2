@@ -6,7 +6,7 @@ import "core:mem"
 import vk "vendor:vulkan"
 
 
-import vma "libs:odin-vma"
+import vma "libs:vma"
 
 //just defining a layout for a function pointer, Resource_Proc is a function pointer for a function that takes no arguments and has no return values.
 Resource_Proc :: #type proc()
@@ -15,6 +15,7 @@ Resource :: union {
     Resource_Proc,
 
     vk.Pipeline,
+
     vk.PipelineLayout,
 
     vk.DescriptorPool,
