@@ -57,7 +57,6 @@ else
     done
 fi
 if grep -Fxq "export PATH=\"$src/vulkan/$vulkan_sdk_version/x86_64/bin:\$PATH\"" $home/.bashrc; then
-else
     echo "Adding Vulkan to path"
     echo "export PATH=\"$src/vulkan/$vulkan_sdk_version/x86_64/bin:\$PATH\"" >> $home/.bashrc
 fi

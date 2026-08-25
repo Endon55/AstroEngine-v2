@@ -127,23 +127,27 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
 
     glfw.SetFramebufferSizeCallback(self.window, callback_framebuffer_size)
     glfw.SetWindowIconifyCallback(self.window, callback_window_minimize)
-    log.debugf("Initializing Vulkan")
-    engine_init_vulkan(self) or_return
-    log.debugf("Initializing Swapchain")
-    engine_init_swapchain(self) or_return
-    log.debugf("Initializing Engine Commands")
-    engine_init_commands(self) or_return
-    log.debugf("Initializing Sync Structures")
-    engine_init_sync_structures(self) or_return
-    log.debugf("Initializing Descriptors")
-    engine_init_descriptors(self) or_return
-    log.debugf("Initializing Pipelines")
-    engine_init_pipelines(self) or_return
-    log.debugf("Initializing ImGui")
-    engine_init_imgui(self) or_return
-    log.debugf("Initializing Vulkan")
-    engine_init_default_data(self) or_return
-    self.is_initialized = true
+   
+    create_vk_instance(self) or_return
+
+    //
+    // log.debugf("Initializing Vulkan")
+    // engine_init_vulkan(self) or_return
+    // log.debugf("Initializing Swapchain")
+    // engine_init_swapchain(self) or_return
+    // log.debugf("Initializing Engine Commands")
+    // engine_init_commands(self) or_return
+    // log.debugf("Initializing Sync Structures")
+    // engine_init_sync_structures(self) or_return
+    // log.debugf("Initializing Descriptors")
+    // engine_init_descriptors(self) or_return
+    // log.debugf("Initializing Pipelines")
+    // engine_init_pipelines(self) or_return
+    // log.debugf("Initializing ImGui")
+    // engine_init_imgui(self) or_return
+    // log.debugf("Initializing Vulkan")
+    // engine_init_default_data(self) or_return
+    // self.is_initialized = true
 
     return true
 
@@ -1022,29 +1026,29 @@ engine_ui_definition :: proc(self: ^Engine) {
 
 @(require_results)
 engine_run :: proc(self: ^Engine) -> (ok: bool) {
-    monitor_info := get_primary_monitor_info()
-    t: Timer
-    timer_init(&t, monitor_info.refresh_rate)
-
+    // monitor_info := get_primary_monitor_info()
+    // t: Timer
+    // timer_init(&t, monitor_info.refresh_rate)
+    //
     log.info("Entering main loop...")
     for !glfw.WindowShouldClose(self.window) {
         glfw.PollEvents()
-
-        if self.stop_rendering {
-            glfw.WaitEvents()
-            timer_init(&t, monitor_info.refresh_rate)
-            continue
-        }
-       
-        timer_tick(&t)
-        engine_ui_definition(self)
-        engine_draw(self) or_return
-        
-        when ODIN_DEBUG {
-            if timer_check_fps_updated(t) {
-                window_update_title_with_fps(self.window, TITLE, timer_get_fps(t))
-            }
-        }
+        //
+        // if self.stop_rendering {
+        //     glfw.WaitEvents()
+        //     timer_init(&t, monitor_info.refresh_rate)
+        //     continue
+        // }
+        //
+        // timer_tick(&t)
+        // engine_ui_definition(self)
+        // engine_draw(self) or_return
+        //
+        // when ODIN_DEBUG {
+        //     if timer_check_fps_updated(t) {
+        //         window_update_title_with_fps(self.window, TITLE, timer_get_fps(t))
+        //     }
+        // }
     }
 
     log.info("Exiting...")
