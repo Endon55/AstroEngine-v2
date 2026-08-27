@@ -32,6 +32,7 @@ Engine::struct {
     vk_physical_device: vk.PhysicalDevice,
     vk_surface: vk.SurfaceKHR,
     vk_device: vk.Device,
+    
 
     vkb: struct{
         instance: vkb.Instance,
@@ -39,6 +40,7 @@ Engine::struct {
         device: vkb.Device,
         swapchain: vkb.Swapchain,
     },
+    vk_init_context: Instance_Device_Context,
 
     vk_swapchain: vk.SwapchainKHR,
     swapchain_format: vk.Format,
@@ -119,35 +121,33 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
         self.window_extent.width,
         self.window_extent.height,
     ) or_return
-    defer if !ok{
+    defer if !ok {
         destroy_window(self.window)
     }
-
+    
     glfw.SetWindowUserPointer(self.window, self)
 
     glfw.SetFramebufferSizeCallback(self.window, callback_framebuffer_size)
     glfw.SetWindowIconifyCallback(self.window, callback_window_minimize)
    
-    create_vk_instance(self) or_return
 
-    //
-    // log.debugf("Initializing Vulkan")
-    // engine_init_vulkan(self) or_return
-    // log.debugf("Initializing Swapchain")
-    // engine_init_swapchain(self) or_return
-    // log.debugf("Initializing Engine Commands")
-    // engine_init_commands(self) or_return
-    // log.debugf("Initializing Sync Structures")
-    // engine_init_sync_structures(self) or_return
-    // log.debugf("Initializing Descriptors")
-    // engine_init_descriptors(self) or_return
-    // log.debugf("Initializing Pipelines")
-    // engine_init_pipelines(self) or_return
-    // log.debugf("Initializing ImGui")
-    // engine_init_imgui(self) or_return
-    // log.debugf("Initializing Vulkan")
-    // engine_init_default_data(self) or_return
-    // self.is_initialized = true
+    log.debugf("Initializing Vulkan")
+    engine_init_vulkan(self) or_return
+    log.debugf("Initializing Swapchain")
+    engine_init_swapchain(self) or_return
+    log.debugf("Initializing Engine Commands")
+    engine_init_commands(self) or_return
+    log.debugf("Initializing Sync Structures")
+    engine_init_sync_structures(self) or_return
+    log.debugf("Initializing Descriptors")
+    engine_init_descriptors(self) or_return
+    log.debugf("Initializing Pipelines")
+    engine_init_pipelines(self) or_return
+    log.debugf("Initializing ImGui")
+    engine_init_imgui(self) or_return
+    log.debugf("Initializing Vulkan")
+    engine_init_default_data(self) or_return
+    self.is_initialized = true
 
     return true
 
@@ -157,131 +157,147 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
 
     ta := context.temp_allocator
     runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
-    
-    log.debugf("Creating Vulkan Instance")
-    instance_builder: vkb.Instance_Builder
-    vkb.instance_builder_init(&instance_builder, ta)
 
-    vkb.instance_builder_set_app_name(&instance_builder, "Astro2")
-    vkb.instance_builder_require_api_version(&instance_builder, vk.API_VERSION_1_3)
+    create_vk_instance(&self.vk_init_context, self) or_return
 
-    when ODIN_DEBUG {
-        log.debugf("Adding debug callback to  Vulkan")
-        vkb.instance_builder_request_validation_layers(&instance_builder)
-
-        default_debug_callback :: proc "system" (message_severity: vk.DebugUtilsMessageSeverityFlagsEXT, message_types: vk.DebugUtilsMessageTypeFlagsEXT,
-            p_callback_data: ^vk.DebugUtilsMessengerCallbackDataEXT, p_user_data: rawptr) -> b32 {
-
-            context = runtime.default_context()
-            context.logger = g_logger
-
-            if .WARNING in message_severity {
-                log.warnf("[%v]: %s", message_types, p_callback_data.pMessage)
-            } else if .ERROR in message_severity {
-                log.errorf("[%v]: %s", message_types, p_callback_data.pMessage)
-                //runtime.debug_trap()
-            } else {
-                log.infof("[%v]: %s", message_types, p_callback_data.pMessage)
-            }
-
-            return false
-        }
-        vkb.instance_builder_set_debug_callback(&instance_builder, default_debug_callback)
-        vkb.instance_builder_set_debug_callback_user_data_pointer(&instance_builder, self)
-
-        VK_LAYER_LUNARG_MONITOR :: "VK_LAYER_LUNARG_monitor"
-
-        info: vkb.System_Info
-        info_err := vkb.system_info_init(&info, allocator = ta)
-        if info_err != nil {
-            log.errorf("Failed to get system info: %#v", info_err)
-        }
-
-        if vkb.system_info_is_layer_available(info, VK_LAYER_LUNARG_MONITOR) {
-            when ODIN_OS == .Windows || ODIN_OS == .Linux {
-                vkb.instance_builder_enable_layer(&instance_builder, VK_LAYER_LUNARG_MONITOR)
-            }
-        }
-    }
-    vkb_instance_err := vkb.instance_builder_build(&instance_builder, &self.vkb.instance)
-    if vkb_instance_err != nil {
-        log.errorf("Failed to build instance: %#v", vkb_instance_err)
-        return
-    }
+    self.vk_instance = self.vk_init_context.vk_instance
+    vk_check(glfw.CreateWindowSurface(self.vk_instance, self.window, self.vk_init_context.allocation_callbacks , &self.vk_surface),) or_return
     defer if !ok {
-        vkb.destroy_instance(&self.vkb.instance)
+        vk.DestroySurfaceKHR(self.vk_instance, self.vk_surface, nil)
     }
 
-    self.vk_instance = self.vkb.instance.vk_instance
+    select_vk_physical_device(&self.vk_init_context) or_return
+    create_vk_logical_device(&self.vk_init_context) or_return
 
-    log.debugf("Creating window surface")
-    vk_check(glfw.CreateWindowSurface(self.vk_instance, self.window, nil, &self.vk_surface),) or_return
-    defer if !ok {
-        vkb.destroy_surface(&self.vkb.instance, self.vk_surface)
-    }
-
-    features_11 := vk.PhysicalDeviceVulkan11Features {
-        shaderDrawParameters = true,
-    }
-    features_12 := vk.PhysicalDeviceVulkan12Features {
-        sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-        bufferDeviceAddress = true,
-        descriptorIndexing = true,
-        vulkanMemoryModelAvailabilityVisibilityChains = false,
-    }
-    features_13 := vk.PhysicalDeviceVulkan13Features {
-        dynamicRendering = true,
-        synchronization2 = true,
-    }
-    log.debugf("Selecting physical device")
-    selector: vkb.Physical_Device_Selector
-    vkb.physical_device_selector_init(&selector, self.vkb.instance, ta)
-
-    vkb.physical_device_selector_set_minimum_version(&selector, vk.API_VERSION_1_3)
-    // vkb.physical_device_selector_add_required_extension_features(&selector, features_12)
-    vkb.physical_device_selector_set_required_features_13(&selector, features_13)
-    vkb.physical_device_selector_set_required_features_12(&selector, features_12)
-    vkb.physical_device_selector_set_required_features_11(&selector, features_11)
-    vkb.physical_device_selector_set_surface(&selector, self.vk_surface)
+    self.vk_physical_device = self.vk_init_context.physical_device.vk_physical_device
+    self.vk_device = self.vk_init_context.device
 
 
-    vkb_physical_device_err := vkb.physical_device_selector_select(&selector, &self.vkb.physical_device)
-    if vkb_physical_device_err != nil {
-        log.errorf("Failed to select physical device: %#v", vkb_physical_device_err)
-        return
-    }
-    defer if !ok {
-        vkb.destroy_physical_device(&self.vkb.physical_device)
-    }
-    
-    self.vk_physical_device = self.vkb.physical_device.vk_physical_device
-    device_properties := vk.PhysicalDeviceProperties2{
-        sType = .PHYSICAL_DEVICE_PROPERTIES_2
-    }
-    // self.vkb.physical_device.vulkan_1_2_features.vulkanMemoryModelAvailabilityVisibilityChains = false
-    vk.GetPhysicalDeviceProperties2(self.vk_physical_device, &device_properties)
-    str := string(cstring(&device_properties.properties.deviceName[0]))
-    log.debugf("Physical Device Name: %v", str)
+    // log.debugf("Creating Vulkan Instance")
+    // instance_builder: vkb.Instance_Builder
+    // vkb.instance_builder_init(&instance_builder, ta)
+    //
+    // vkb.instance_builder_set_app_name(&instance_builder, "Astro2")
+    // vkb.instance_builder_require_api_version(&instance_builder, vk.API_VERSION_1_3)
+    //
+    // when ODIN_DEBUG {
+    //     log.debugf("Adding debug callback to  Vulkan")
+    //     vkb.instance_builder_request_validation_layers(&instance_builder)
+    //
+    //     default_debug_callback :: proc "system" (message_severity: vk.DebugUtilsMessageSeverityFlagsEXT, message_types: vk.DebugUtilsMessageTypeFlagsEXT,
+    //         p_callback_data: ^vk.DebugUtilsMessengerCallbackDataEXT, p_user_data: rawptr) -> b32 {
+    //
+    //         context = runtime.default_context()
+    //         context.logger = g_logger
+    //
+    //         if .WARNING in message_severity {
+    //             log.warnf("[%v]: %s", message_types, p_callback_data.pMessage)
+    //         } else if .ERROR in message_severity {
+    //             log.errorf("[%v]: %s", message_types, p_callback_data.pMessage)
+    //             //runtime.debug_trap()
+    //         } else {
+    //             log.infof("[%v]: %s", message_types, p_callback_data.pMessage)
+    //         }
+    //
+    //         return false
+    //     }
+        // vkb.instance_builder_set_debug_callback(&instance_builder, default_debug_callback)
+        // vkb.instance_builder_set_debug_callback_user_data_pointer(&instance_builder, self)
 
-    log.debugf("Building vk.device builder")
-    device_builder: vkb.Device_Builder
-    vkb.device_builder_init(&device_builder, ta)
-    log.debugf("Building vk.device")
-    // vkb.device_builder_add_pnext(&device_builder, &features_12)
-    log.debugf("Extensions: %#v", &self.vkb.physical_device.extended_features_chain)
+    //     VK_LAYER_LUNARG_MONITOR :: "VK_LAYER_LUNARG_monitor"
+    //
+    //     info: vkb.System_Info
+    //     info_err := vkb.system_info_init(&info, allocator = ta)
+    //     if info_err != nil {
+    //         log.errorf("Failed to get system info: %#v", info_err)
+    //     }
+    //
+    //     if vkb.system_info_is_layer_available(info, VK_LAYER_LUNARG_MONITOR) {
+    //         when ODIN_OS == .Windows || ODIN_OS == .Linux {
+    //             vkb.instance_builder_enable_layer(&instance_builder, VK_LAYER_LUNARG_MONITOR)
+    //         }
+    //     }
+    //}
+    // vkb_instance_err := vkb.instance_builder_build(&instance_builder, &self.vkb.instance)
+    // if vkb_instance_err != nil {
+    //     log.errorf("Failed to build instance: %#v", vkb_instance_err)
+    //     return
+    // }
+    // defer if !ok {
+    //     vkb.destroy_instance(&self.vkb.instance)
+     // }
+    //
+    // self.vk_instance = self.vkb.instance.vk_instance
+    //
 
-    vkb_device_err := vkb.device_builder_build(&device_builder, &self.vkb.physical_device, &self.vkb.device)
-    if vkb_device_err != nil {
-        log.errorf("Failed to get logical device: %#v", vkb_device_err)
-        return
-    }
-    defer if !ok {
-        vkb.destroy_device(&self.vkb.device)    
-    }
-    self.vk_device = self.vkb.device.vk_device
-    log.debugf("Setting up deletion queue and allocators")
-    deletion_queue_init(&self.main_deletion_queue, self.vk_device)
-
+    // log.debugf("Creating window surface")
+    // vk_check(glfw.CreateWindowSurface(self.vk_instance, self.window, nil, &self.vk_surface),) or_return
+    // defer if !ok {
+    //     vkb.destroy_surface(&self.vkb.instance, self.vk_surface)
+    // }
+    //
+    // features_11 := vk.PhysicalDeviceVulkan11Features {
+    //     shaderDrawParameters = true,
+    // }
+    // features_12 := vk.PhysicalDeviceVulkan12Features {
+    //     sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+    //     bufferDeviceAddress = true,
+    //     descriptorIndexing = true,
+    //     vulkanMemoryModelAvailabilityVisibilityChains = false,
+    // }
+    // features_13 := vk.PhysicalDeviceVulkan13Features {
+    //     dynamicRendering = true,
+    //     synchronization2 = true,
+    // }
+    // log.debugf("Selecting physical device")
+    // selector: vkb.Physical_Device_Selector
+    // vkb.physical_device_selector_init(&selector, self.vkb.instance, ta)
+    //
+    // vkb.physical_device_selector_set_minimum_version(&selector, vk.API_VERSION_1_3)
+    // // vkb.physical_device_selector_add_required_extension_features(&selector, features_12)
+    // vkb.physical_device_selector_set_required_features_13(&selector, features_13)
+    // vkb.physical_device_selector_set_required_features_12(&selector, features_12)
+    // vkb.physical_device_selector_set_required_features_11(&selector, features_11)
+    // vkb.physical_device_selector_set_surface(&selector, self.vk_surface)
+    //
+    //
+    // vkb_physical_device_err := vkb.physical_device_selector_select(&selector, &self.vkb.physical_device)
+    // if vkb_physical_device_err != nil {
+    //     log.errorf("Failed to select physical device: %#v", vkb_physical_device_err)
+    //     return
+    // }
+    // defer if !ok {
+    //     vkb.destroy_physical_device(&self.vkb.physical_device)
+    // }
+    //
+    // self.vk_physical_device = self.vkb.physical_device.vk_physical_device
+    // device_properties := vk.PhysicalDeviceProperties2{
+    //     sType = .PHYSICAL_DEVICE_PROPERTIES_2
+    // }
+    // // self.vkb.physical_device.vulkan_1_2_features.vulkanMemoryModelAvailabilityVisibilityChains = false
+    // vk.GetPhysicalDeviceProperties2(self.vk_physical_device, &device_properties)
+    // str := string(cstring(&device_properties.properties.deviceName[0]))
+    // log.debugf("Physical Device Name: %v", str)
+    //
+    // log.debugf("Building vk.device builder")
+    // device_builder: vkb.Device_Builder
+    // vkb.device_builder_init(&device_builder, ta)
+    // log.debugf("Building vk.device")
+    // // vkb.device_builder_add_pnext(&device_builder, &features_12)
+    // log.debugf("Extensions: %#v", &self.vkb.physical_device.extended_features_chain)
+    //
+    // vkb_device_err := vkb.device_builder_build(&device_builder, &self.vkb.physical_device, &self.vkb.device)
+    // if vkb_device_err != nil {
+    //     log.errorf("Failed to get logical device: %#v", vkb_device_err)
+    //     return
+    // }
+    // defer if !ok {
+    //     vkb.destroy_device(&self.vkb.device)    
+    // }
+    // self.vk_device = self.vkb.device.vk_device
+    // log.debugf("Setting up deletion queue and allocators")
+    // deletion_queue_init(&self.main_deletion_queue, self.vk_device)
+    //
 
     vma_vulkan_functions := vma.create_vulkan_functions()
     api_version := min(self.vkb.instance.api_version, self.vkb.physical_device.vk_properties.apiVersion)

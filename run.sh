@@ -1,5 +1,7 @@
 #!/bin/bash
 
+clear
+
 odin_args="--collection:libs=libs -debug -define:GLFW_SHARED=false -keep-executable"
 odin_command="run"
 prefix=""
