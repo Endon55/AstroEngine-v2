@@ -40,7 +40,7 @@ Engine::struct {
         device: vkb.Device,
         swapchain: vkb.Swapchain,
     },
-    vk_init_context: Instance_Device_Context,
+    vk_context: Vulkan_Creation_Context,
 
     vk_swapchain: vk.SwapchainKHR,
     swapchain_format: vk.Format,
@@ -158,19 +158,19 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
     ta := context.temp_allocator
     runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 
-    create_vk_instance(&self.vk_init_context, self) or_return
+    create_vk_instance(&self.vk_context, self) or_return
 
-    self.vk_instance = self.vk_init_context.vk_instance
-    vk_check(glfw.CreateWindowSurface(self.vk_instance, self.window, self.vk_init_context.allocation_callbacks , &self.vk_surface),) or_return
+    self.vk_instance = self.vk_context.vk_instance
+    vk_check(glfw.CreateWindowSurface(self.vk_instance, self.window, self.vk_context.allocation_callbacks , &self.vk_surface),) or_return
     defer if !ok {
         vk.DestroySurfaceKHR(self.vk_instance, self.vk_surface, nil)
     }
 
-    select_vk_physical_device(&self.vk_init_context) or_return
-    create_vk_logical_device(&self.vk_init_context) or_return
+    select_vk_physical_device(&self.vk_context, self.vk_surface) or_return
+    create_vk_logical_device(&self.vk_context) or_return
 
-    self.vk_physical_device = self.vk_init_context.physical_device.vk_physical_device
-    self.vk_device = self.vk_init_context.device
+    self.vk_physical_device = self.vk_context.physical_device.vk_physical_device
+    self.vk_device = self.vk_context.vk_device
 
 
     // log.debugf("Creating Vulkan Instance")
@@ -323,54 +323,59 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
 engine_create_swapchain :: proc(self: ^Engine, extent: vk.Extent2D) -> (ok: bool) {
 
     ta := context.temp_allocator
-    runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 
-    self.swapchain_format = .B8G8R8A8_UNORM
-
-    builder: vkb.Swapchain_Builder
-    vkb.swapchain_builder_init(&builder, self. vkb.device, ta)
-
-    vkb.swapchain_builder_set_desired_format(&builder, {format = self.swapchain_format, colorSpace = .SRGB_NONLINEAR})
-    //FIFO turns on vsync 
-    vkb.swapchain_builder_set_desired_present_mode(&builder, .FIFO)
-    vkb.swapchain_builder_set_desired_present_mode(&builder, .IMMEDIATE)
-    vkb.swapchain_builder_set_desired_present_mode(&builder, .MAILBOX)
-    vkb.swapchain_builder_set_desired_extent(&builder, extent.width, extent.height)
-    vkb.swapchain_builder_add_image_usage_flags(&builder, {.TRANSFER_DST})
-
-    swapchain_err := vkb.swapchain_builder_build(&builder, &self.vkb.swapchain)
-
-    if swapchain_err != nil {
-        log.errorf("Failed to build swapchain: %#v", swapchain_err)
-        return
-    }
+    //
+    // runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
+    //
+    // self.swapchain_format = .B8G8R8A8_UNORM
+    //
+    // builder: vkb.Swapchain_Builder
+    // vkb.swapchain_builder_init(&builder, self. vkb.device, ta)
+    //
+    // vkb.swapchain_builder_set_desired_format(&builder, {format = self.swapchain_format, colorSpace = .SRGB_NONLINEAR})
+    // //FIFO turns on vsync 
+    // vkb.swapchain_builder_set_desired_present_mode(&builder, .FIFO)
+    // vkb.swapchain_builder_set_desired_present_mode(&builder, .IMMEDIATE)
+    // vkb.swapchain_builder_set_desired_present_mode(&builder, .MAILBOX)
+    // vkb.swapchain_builder_set_desired_extent(&builder, extent.width, extent.height)
+    // vkb.swapchain_builder_add_image_usage_flags(&builder, {.TRANSFER_DST})
+    //
+    // swapchain_err := vkb.swapchain_builder_build(&builder, &self.vkb.swapchain)
+    //
+    // if swapchain_err != nil {
+    //     log.errorf("Failed to build swapchain: %#v", swapchain_err)
+    //     return
+    // }
     
-    self.vk_swapchain = self.vkb.swapchain.vk_swapchain
-    self.swapchain_extent = self.vkb.swapchain.vk_extent
 
-    swapchain_images, swapchain_images_err := vkb.swapchain_get_images(self.vkb.swapchain)
+    create_vk_swapchain(&self.vk_context.swapchain_context, extent.width, extent.height)
 
-    if swapchain_images_err != nil {
+    self.vk_swapchain = self.vk_context.swapchain_context.vk_swapchain
+    self.swapchain_extent = self.vk_context.swapchain_context.vk_extent
+
+    swapchain_images, swapchain_images_err := swapchain_get_images(self.vk_context.swapchain_context)
+
+    if swapchain_images_err != false {
         log.errorf("Failed to build swapchain images: %#v", swapchain_images_err)
         return
     }
 
-    swapchain_image_views, swapchain_image_views_err := vkb.swapchain_get_image_views(self.vkb.swapchain)
+    swapchain_image_views, swapchain_image_views_err := swapchain_get_image_views(self.vk_context.swapchain_context, swapchain_images)
 
-    if swapchain_image_views_err != nil {
+    if swapchain_image_views_err != false {
         log.errorf("Failed to build swapchain image views: %#v", swapchain_image_views_err)
         return
     }
     self.swapchain_images = swapchain_images
     self.swapchain_image_views = swapchain_image_views
     
-    graphics_queue, graphics_queue_err := vkb.device_get_queue(self.vkb.device, .Graphics)
-    if graphics_queue_err != nil {
+    graphics_queue, graphics_queue_err := device_get_universal_queue(self.vk_context)
+    if graphics_queue_err != false {
         log.errorf("Failed to get graphics queue: %#v", graphics_queue_err)
     }
 
-    graphics_queue_family, graphics_queue_family_err := vkb.device_get_queue_index(self.vkb.device, .Graphics)
-    if graphics_queue_family_err != nil {
+    graphics_queue_family, graphics_queue_family_err := device_get_universal_queue__index(self.vk_context)
+    if graphics_queue_family_err != false {
         log.errorf("Failed to get graphics queue family: %#v", graphics_queue_family_err)
     }
 
