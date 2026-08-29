@@ -48,6 +48,9 @@ pipeline_builder_clear :: proc(self: ^Pipeline_Builder) {
     self.tessellation_state = {
         sType = .PIPELINE_TESSELLATION_STATE_CREATE_INFO,
     }
+    self.render_info = {
+        sType = .PIPELINE_RENDERING_CREATE_INFO
+    }
 
     clear(&self.shader_stages)
     self.pipeline_layout = {}

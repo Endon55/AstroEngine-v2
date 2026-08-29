@@ -4,6 +4,7 @@ import "core:container/priority_queue"
 import vk "vendor:vulkan"
 import "vendor:glfw"
 import "core:log"
+import "core:slice"
 import "base:runtime"
 import "core:strings"
 
@@ -12,12 +13,13 @@ import "core:strings"
 Vulkan_Creation_Context::struct {
     vk_instance: vk.Instance,
     vk_device: vk.Device,
+    vk_feature_requirements: Vulkan_Feature_Requirements,
     physical_device: Physical_Device,
+    vk_debug_messenger: vk.DebugUtilsMessengerEXT,
     debug_message_severity: vk.DebugUtilsMessageSeverityFlagsEXT,
     debug_message_type: vk.DebugUtilsMessageTypeFlagsEXT,
     debug_ser_data_pointer: rawptr,
     allocation_callbacks: ^vk.AllocationCallbacks,
-    physical_device_requirements: Physical_Device_Requirements,
     vk_surface: vk.SurfaceKHR,
     swapchain_context: Swapchain_Context,
 }
@@ -54,16 +56,23 @@ Physical_Device::struct{
 
 }
 
-Physical_Device_Requirements::struct{
-    properties: vk.PhysicalDeviceProperties,
-    features: vk.PhysicalDeviceFeatures,
-    extensions: [dynamic]cstring,
+Vulkan_Feature_Requirements::struct{
+    instance_extensions: [dynamic]cstring,
+    device_properties: vk.PhysicalDeviceProperties,
+    device_features: vk.PhysicalDeviceFeatures,
+    device_features_11: vk.PhysicalDeviceVulkan11Features,
+    device_features_12: vk.PhysicalDeviceVulkan12Features,
+    device_features_13: vk.PhysicalDeviceVulkan13Features,
+    device_features_14: vk.PhysicalDeviceVulkan14Features,
+    device_extensions: [dynamic]cstring,
 }
 
-create_vk_instance :: proc(self: ^Vulkan_Creation_Context, engine: ^Engine) -> (ok: bool,) {
+create_vk_instance :: proc(self: ^Vulkan_Creation_Context, feature_requirements: Vulkan_Feature_Requirements, engine: ^Engine) -> (ok: bool,) {
     g_logger = context.logger
 
     ta:= context.temp_allocator
+
+    self.vk_feature_requirements = feature_requirements
 
    //required to load the function pointer addresses
     vk.load_proc_addresses_global(rawptr(glfw.GetInstanceProcAddress))
@@ -81,8 +90,12 @@ create_vk_instance :: proc(self: ^Vulkan_Creation_Context, engine: ^Engine) -> (
         engineVersion = vk.MAKE_API_VERSION(1, 4, 0, 0),
         apiVersion = vk.API_VERSION_1_4,
     }
-    extensions:= glfw.GetRequiredInstanceExtensions()
 
+    glfw_extensions:= glfw.GetRequiredInstanceExtensions()
+    extensions: [dynamic]cstring = slice.clone_to_dynamic(glfw_extensions[:])
+    defer delete(extensions)
+
+    append(&extensions, "VK_EXT_debug_utils")
     layer_count : u32
     layers_used := make([dynamic]cstring, ta)
     vk.EnumerateInstanceLayerProperties(&layer_count, nil)
@@ -112,10 +125,10 @@ create_vk_instance :: proc(self: ^Vulkan_Creation_Context, engine: ^Engine) -> (
     vk.load_proc_addresses(self.vk_instance)
 
     when ODIN_DEBUG {
-        log.debugf("Adding debug callback to  Vulkan")
+        log.debugf("Adding debug callback to Vulkan")
 
 
-        // vk_debug_messenger: vk.DebugUtilsMessengerCallbackEXT
+   
         debug_utils_create_info := vk.DebugUtilsMessengerCreateInfoEXT {
             sType = .DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
             pNext = nil,
@@ -124,6 +137,8 @@ create_vk_instance :: proc(self: ^Vulkan_Creation_Context, engine: ^Engine) -> (
             pfnUserCallback = default_debug_callback,
             pUserData = engine
         }
+        assert(vk.CreateDebugUtilsMessengerEXT != nil)
+        vk.CreateDebugUtilsMessengerEXT(self.vk_instance, &debug_utils_create_info, self.allocation_callbacks, &self.vk_debug_messenger)
     }
     return true
 }
@@ -134,9 +149,12 @@ select_vk_physical_device :: proc(self: ^Vulkan_Creation_Context, vk_surface: vk
     self.vk_surface = vk_surface
     self.swapchain_context.vk_surface = self.vk_surface
 
-    self.physical_device_requirements.extensions = make([dynamic]cstring, context.allocator)
-    append(&self.physical_device_requirements.extensions, vk.KHR_SWAPCHAIN_EXTENSION_NAME)
-
+    // self.physical_device_requirements.extensions = make([dynamic]cstring, context.allocator)
+    // append(&self.physical_device_requirements.extensions, vk.KHR_SWAPCHAIN_EXTENSION_NAME)
+    //
+    // append(&self.physical_device_requirements.extensions, vk.KHR_PIPELINE_LIBRARY_EXTENSION_NAME)
+    // append(&self.physical_device_requirements.extensions, vk.EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)
+    //
 
     physical_device_count: u32  
     vk_check(vk.EnumeratePhysicalDevices(self.vk_instance, &physical_device_count, nil)) or_return
@@ -152,7 +170,7 @@ select_vk_physical_device :: proc(self: ^Vulkan_Creation_Context, vk_surface: vk
     for i in 0..<physical_device_count {
         physical_devices[i].vk_physical_device = vk_physical_devices[i]
         query_physical_device(&physical_devices[i], vk_surface)
-        suitable, score := evaluate_physical_device(&physical_devices[i], &self.physical_device_requirements)
+        suitable, score := evaluate_physical_device(&physical_devices[i], &self.vk_feature_requirements)
         if suitable {
             if score > best_score {
                 best_score = score
@@ -174,6 +192,12 @@ select_vk_physical_device :: proc(self: ^Vulkan_Creation_Context, vk_surface: vk
 create_vk_logical_device :: proc(self: ^Vulkan_Creation_Context)  -> (ok: bool,) {
 
     // ta := context.temp_allocator
+
+    buffer_device_address_features:= vk.PhysicalDeviceBufferDeviceAddressFeatures {
+        sType = .PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
+        bufferDeviceAddress = true,
+    }
+
     queue_priority: f32 = 1.0
     device_queue_create_info := vk.DeviceQueueCreateInfo {
         sType = .DEVICE_QUEUE_CREATE_INFO,
@@ -184,6 +208,7 @@ create_vk_logical_device :: proc(self: ^Vulkan_Creation_Context)  -> (ok: bool,)
 
     device_create_info := vk.DeviceCreateInfo {
         sType = .DEVICE_CREATE_INFO,
+        pNext = &buffer_device_address_features,
         pQueueCreateInfos = &device_queue_create_info,
         queueCreateInfoCount = 1,
         pEnabledFeatures = &self.physical_device.features,
@@ -205,12 +230,13 @@ create_vk_swapchain ::proc(self: ^Swapchain_Context, width, height :u32 ) -> (ok
     self.vk_present_mode = choose_swapchain_present_mode(self.physical_device)
     self.vk_surface_format = choose_swapchain_format(self.physical_device)
     self.vk_image_usage_flags = {.COLOR_ATTACHMENT, .TRANSFER_DST}
-     
+    
+    //max image of 0 indicates infinite max
     min_images := self.physical_device.surface_capabilities.minImageCount
     max_images := self.physical_device.surface_capabilities.maxImageCount
 
     if self.image_count < min_images {self.image_count = min_images}
-    if self.image_count > max_images {self.image_count = max_images}
+    if max_images > 0 && self.image_count > max_images {self.image_count = max_images}
 
     swapchain_create_info := vk.SwapchainCreateInfoKHR {
         sType = .SWAPCHAIN_CREATE_INFO_KHR,
@@ -243,6 +269,13 @@ create_vk_swapchain ::proc(self: ^Swapchain_Context, width, height :u32 ) -> (ok
 
     return true
 }
+
+
+/* ***************************************************************
+   -----------------------Helper Functions------------------------
+   ************************************************************ */
+
+
 
 @(private="file")
 query_physical_device ::proc(self: ^Physical_Device, surface: vk.SurfaceKHR){
@@ -287,14 +320,14 @@ query_physical_device ::proc(self: ^Physical_Device, surface: vk.SurfaceKHR){
         self.surface_present_modes = make([]vk.PresentModeKHR, present_count, context.allocator)
         vk.GetPhysicalDeviceSurfacePresentModesKHR(self.vk_physical_device, surface, &present_count, raw_data(self.surface_present_modes))
     }
-    for i in 0..<format_count {
-        format := self.surface_formats[i]
-        log.infof("Format: %#v", format)
-    }
+    // for i in 0..<format_count {
+    //     format := self.surface_formats[i]
+    //     log.infof("Format: %#v", format)
+    // }
 }
 
 @(private="file")
-evaluate_physical_device :: proc(self: ^Physical_Device, requirements: ^Physical_Device_Requirements) ->(suitable: bool, score:i32) {
+evaluate_physical_device :: proc(self: ^Physical_Device, requirements: ^Vulkan_Feature_Requirements) ->(suitable: bool, score:i32) {
 
     suitable = true
     score = 0
@@ -302,12 +335,12 @@ evaluate_physical_device :: proc(self: ^Physical_Device, requirements: ^Physical
     if !suitable {
         return suitable, score
     }
-    ext_count := len(requirements.extensions)
+    ext_count := len(requirements.device_extensions)
 
     for i in 0..<ext_count {
         found : bool
         for j in 0..<len(self.extensions) {
-            if cstring(&self.extensions[j].extensionName[0]) == requirements.extensions[i]{
+            if cstring(&self.extensions[j].extensionName[0]) == requirements.device_extensions[i]{
                 found = true
                 break 
             }
@@ -394,7 +427,6 @@ default_debug_callback :: proc "system" (message_severity: vk.DebugUtilsMessageS
 
     context = runtime.default_context()
     context.logger = g_logger
-
     if .WARNING in message_severity {
         log.warnf("[%v]: %s", message_types, p_callback_data.pMessage)
     } else if .ERROR in message_severity {
@@ -476,5 +508,5 @@ device_get_universal_queue :: proc (self: Vulkan_Creation_Context) ->(out_queue:
 
 device_get_universal_queue__index :: proc (self: Vulkan_Creation_Context) -> (index: u32, err: bool) {
     
-    return self.physical_device.universal_queue_family_index
+    return self.physical_device.universal_queue_family_index, false
 }

@@ -158,7 +158,28 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
     ta := context.temp_allocator
     runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 
-    create_vk_instance(&self.vk_context, self) or_return
+    features:= Vulkan_Feature_Requirements {
+        device_features_11 = {
+            shaderDrawParameters = true,
+        },
+        device_features_12 = {
+            sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+            bufferDeviceAddress = true,
+            descriptorIndexing = true,
+            vulkanMemoryModelAvailabilityVisibilityChains = false,
+        },
+        device_features_13 = {
+            sType =.PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+            dynamicRendering = true,
+            synchronization2 = true,
+        },
+        device_extensions = {
+            vk.KHR_SWAPCHAIN_EXTENSION_NAME, vk.KHR_PIPELINE_LIBRARY_EXTENSION_NAME, vk.EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME,
+        }
+
+    }
+
+    create_vk_instance(&self.vk_context, features, self) or_return
 
     self.vk_instance = self.vk_context.vk_instance
     vk_check(glfw.CreateWindowSurface(self.vk_instance, self.window, self.vk_context.allocation_callbacks , &self.vk_surface),) or_return
@@ -294,10 +315,9 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
     // defer if !ok {
     //     vkb.destroy_device(&self.vkb.device)    
     // }
-    // self.vk_device = self.vkb.device.vk_device
-    // log.debugf("Setting up deletion queue and allocators")
-    // deletion_queue_init(&self.main_deletion_queue, self.vk_device)
-    //
+    log.debugf("Setting up deletion queue and allocators")
+    deletion_queue_init(&self.main_deletion_queue, self.vk_device)
+
 
     vma_vulkan_functions := vma.create_vulkan_functions()
     api_version := min(self.vkb.instance.api_version, self.vkb.physical_device.vk_properties.apiVersion)
@@ -733,10 +753,12 @@ engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) {
         pushConstantRangeCount = 1,
     }
 
-    vk_check(vk.CreatePipelineLayout(self.vk_device, &compute_layout, nil, & self.gradient_pipeline_layout)) or_return
-
+    vk_check(vk.CreatePipelineLayout(self.vk_device, &compute_layout, nil, & self.gradient_pipeline_layout), "Failed to create pipeline layout") or_return
+    log.debugf("---Background Pipelines")
     engine_init_background_pipelines(self) or_return
+    log.debugf("---Triangle Pipelines")
     engine_init_triangle_pipeline(self) or_return
+    log.debugf("---Mesh Pipelines")
     engine_init_mesh_pipeline(self) or_return
 
     return true
