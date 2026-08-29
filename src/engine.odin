@@ -157,7 +157,7 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
 
     ta := context.temp_allocator
     runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
-
+    
     features:= Vulkan_Feature_Requirements {
         device_features_11 = {
             shaderDrawParameters = true,
@@ -173,16 +173,14 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
             dynamicRendering = true,
             synchronization2 = true,
         },
-        device_extensions = {
-            vk.KHR_SWAPCHAIN_EXTENSION_NAME, vk.KHR_PIPELINE_LIBRARY_EXTENSION_NAME, vk.EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME,
-        }
-
     }
-
+    features.device_extensions = make([dynamic]cstring, context.allocator)
+    append(&features.device_extensions, vk.KHR_SWAPCHAIN_EXTENSION_NAME, vk.KHR_PIPELINE_LIBRARY_EXTENSION_NAME, vk.EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)
     create_vk_instance(&self.vk_context, features, self) or_return
 
     self.vk_instance = self.vk_context.vk_instance
     vk_check(glfw.CreateWindowSurface(self.vk_instance, self.window, self.vk_context.allocation_callbacks , &self.vk_surface),) or_return
+
     defer if !ok {
         vk.DestroySurfaceKHR(self.vk_instance, self.vk_surface, nil)
     }

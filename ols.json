@@ -1,2 +1,24 @@
 
+{
+    "$schema": "https://githubusercontent.com",
+    "enable_checker_workspace_diagnostics": true,
+    "enable_checker_only_saved": false,
+    "checker_args": "-debug -define:GLFW_SHARED=false",
+    "collections": [
+        { "name": "libs", "path": "./libs" }
+    ],
+    "enable_semantic_tokens": true,
+    "enable_fake_methods": true,
+    "enable_inlay_hints": true,
+    "enable_checker_workspace_diagnostics": true,
+    "enable_checker_only_saved": true,
+    "enable_snippets": true,
 
+    "profile": "default",
+    "profiles": [
+        {
+            "name": "default",
+            "checker_path": ["src"] 
+        }
+    ]
+}   

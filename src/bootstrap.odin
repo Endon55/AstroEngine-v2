@@ -69,11 +69,8 @@ Vulkan_Feature_Requirements::struct{
 
 create_vk_instance :: proc(self: ^Vulkan_Creation_Context, feature_requirements: Vulkan_Feature_Requirements, engine: ^Engine) -> (ok: bool,) {
     g_logger = context.logger
-
     ta:= context.temp_allocator
-
     self.vk_feature_requirements = feature_requirements
-
    //required to load the function pointer addresses
     vk.load_proc_addresses_global(rawptr(glfw.GetInstanceProcAddress))
     assert(vk.CreateInstance != nil)
@@ -90,7 +87,7 @@ create_vk_instance :: proc(self: ^Vulkan_Creation_Context, feature_requirements:
         engineVersion = vk.MAKE_API_VERSION(1, 4, 0, 0),
         apiVersion = vk.API_VERSION_1_4,
     }
-
+    
     glfw_extensions:= glfw.GetRequiredInstanceExtensions()
     extensions: [dynamic]cstring = slice.clone_to_dynamic(glfw_extensions[:])
     defer delete(extensions)
@@ -155,7 +152,6 @@ select_vk_physical_device :: proc(self: ^Vulkan_Creation_Context, vk_surface: vk
     // append(&self.physical_device_requirements.extensions, vk.KHR_PIPELINE_LIBRARY_EXTENSION_NAME)
     // append(&self.physical_device_requirements.extensions, vk.EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)
     //
-
     physical_device_count: u32  
     vk_check(vk.EnumeratePhysicalDevices(self.vk_instance, &physical_device_count, nil)) or_return
     
@@ -163,8 +159,7 @@ select_vk_physical_device :: proc(self: ^Vulkan_Creation_Context, vk_surface: vk
         vk_check(vk.EnumeratePhysicalDevices(self.vk_instance, &physical_device_count, raw_data(vk_physical_devices))) or_return
 
     physical_devices := make([]Physical_Device, physical_device_count, ta)
-
-
+    
     best_device: i32 = -1
     best_score: i32 = -1
     for i in 0..<physical_device_count {
@@ -212,8 +207,8 @@ create_vk_logical_device :: proc(self: ^Vulkan_Creation_Context)  -> (ok: bool,)
         pQueueCreateInfos = &device_queue_create_info,
         queueCreateInfoCount = 1,
         pEnabledFeatures = &self.physical_device.features,
-        enabledExtensionCount = u32(len(self.physical_device_requirements.extensions)),
-        ppEnabledExtensionNames = raw_data(self.physical_device_requirements.extensions)
+        enabledExtensionCount = u32(len(self.vk_feature_requirements.device_extensions)),
+        ppEnabledExtensionNames = raw_data(self.vk_feature_requirements.device_extensions),
     }
     
     vk_check(vk.CreateDevice(self.physical_device.vk_physical_device, &device_create_info, nil, &self.vk_device)) or_return
@@ -230,7 +225,8 @@ create_vk_swapchain ::proc(self: ^Swapchain_Context, width, height :u32 ) -> (ok
     self.vk_present_mode = choose_swapchain_present_mode(self.physical_device)
     self.vk_surface_format = choose_swapchain_format(self.physical_device)
     self.vk_image_usage_flags = {.COLOR_ATTACHMENT, .TRANSFER_DST}
-    
+  
+
     //max image of 0 indicates infinite max
     min_images := self.physical_device.surface_capabilities.minImageCount
     max_images := self.physical_device.surface_capabilities.maxImageCount
@@ -431,7 +427,7 @@ default_debug_callback :: proc "system" (message_severity: vk.DebugUtilsMessageS
         log.warnf("[%v]: %s", message_types, p_callback_data.pMessage)
     } else if .ERROR in message_severity {
         log.errorf("[%v]: %s", message_types, p_callback_data.pMessage)
-        //runtime.debug_trap()
+        runtime.debug_trap()
     } else {
         log.infof("[%v]: %s", message_types, p_callback_data.pMessage)
     }
