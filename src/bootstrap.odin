@@ -1,12 +1,10 @@
 package astro
 
-import "core:container/priority_queue"
 import vk "vendor:vulkan"
 import "vendor:glfw"
 import "core:log"
 import "core:slice"
 import "base:runtime"
-import "core:strings"
 
 
 
@@ -49,6 +47,10 @@ Physical_Device::struct{
     has_universal_queue_family: bool,
     properties : vk.PhysicalDeviceProperties,
     features : vk.PhysicalDeviceFeatures,
+    features_11: vk.PhysicalDeviceVulkan11Features, 
+    features_12: vk.PhysicalDeviceVulkan12Features,
+    features_13: vk.PhysicalDeviceVulkan13Features,
+    features_14: vk.PhysicalDeviceVulkan14Features,
     extensions: []vk.ExtensionProperties,
     surface_capabilities: vk.SurfaceCapabilitiesKHR,
     surface_formats: []vk.SurfaceFormatKHR,
@@ -165,7 +167,7 @@ select_vk_physical_device :: proc(self: ^Vulkan_Creation_Context, vk_surface: vk
     for i in 0..<physical_device_count {
         physical_devices[i].vk_physical_device = vk_physical_devices[i]
         query_physical_device(&physical_devices[i], vk_surface)
-        suitable, score := evaluate_physical_device(&physical_devices[i], &self.vk_feature_requirements)
+        suitable, score := evaluate_physical_device(physical_devices[i], self.vk_feature_requirements)
         if suitable {
             if score > best_score {
                 best_score = score
@@ -277,7 +279,33 @@ create_vk_swapchain ::proc(self: ^Swapchain_Context, width, height :u32 ) -> (ok
 query_physical_device ::proc(self: ^Physical_Device, surface: vk.SurfaceKHR){
 
     vk.GetPhysicalDeviceProperties(self.vk_physical_device, &self.properties)
+
     vk.GetPhysicalDeviceFeatures(self.vk_physical_device, &self.features)
+    
+    self.features_14 = {
+        sType = .PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
+        pNext = nil,
+    }
+    self.features_13 = {
+        sType = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        pNext = &self.features_14,
+    }
+    self.features_12 = {
+        sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        pNext = &self.features_13,
+    }
+    self.features_11 = {
+        sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+        pNext = &self.features_12,
+    }
+
+
+    feature_chain := vk.PhysicalDeviceFeatures2 {
+        sType = .PHYSICAL_DEVICE_FEATURES_2,
+        pNext = &self.features_11,
+    }
+
+    vk.GetPhysicalDeviceFeatures2(self.vk_physical_device, &feature_chain)
 
     extension_count: u32
 
@@ -323,11 +351,11 @@ query_physical_device ::proc(self: ^Physical_Device, surface: vk.SurfaceKHR){
 }
 
 @(private="file")
-evaluate_physical_device :: proc(self: ^Physical_Device, requirements: ^Vulkan_Feature_Requirements) ->(suitable: bool, score:i32) {
+evaluate_physical_device :: proc(self: Physical_Device, requirements: Vulkan_Feature_Requirements) ->(suitable: bool, score:i32) {
 
     suitable = true
     score = 0
-    suitable = self.has_universal_queue_family && len(self.surface_formats) > 0 && len(self.surface_present_modes) > 0
+    suitable = self.has_universal_queue_family && len(self.surface_formats) > 0 && len(self.surface_present_modes) > 0 //&& supports_all_features(self, requirements)
     if !suitable {
         return suitable, score
     }
@@ -346,6 +374,8 @@ evaluate_physical_device :: proc(self: ^Physical_Device, requirements: ^Vulkan_F
         }
     }
 
+    
+
 
     #partial switch self.properties.deviceType {
     case .DISCRETE_GPU:
@@ -357,6 +387,17 @@ evaluate_physical_device :: proc(self: ^Physical_Device, requirements: ^Vulkan_F
     }
     return suitable, score
 }
+
+@(private="file")
+supports_all_features :: proc(self: Physical_Device, reqs: Vulkan_Feature_Requirements) ->(suitable: bool) {
+
+
+
+    return compare_structs(self.features, reqs.device_features) &&
+            compare_structs(self.features, reqs.device_features_11)
+}
+
+
 
 @(private="file")
 choose_swapchain_format :: proc(self: Physical_Device) -> (format: vk.SurfaceFormatKHR) {
@@ -505,4 +546,28 @@ device_get_universal_queue :: proc (self: Vulkan_Creation_Context) ->(out_queue:
 device_get_universal_queue__index :: proc (self: Vulkan_Creation_Context) -> (index: u32, err: bool) {
     
     return self.physical_device.universal_queue_family_index, false
+}
+
+compare_features_structs :: proc (self, comparitor_struct: $T) -> (suitable: bool) {
+
+    if !intrinsics.type_is_struct(T) {
+        return false
+    } 
+
+    type_info := reflect.Type_Info_Struct(T)
+    
+    for i in 0..<type_info.field_count {
+        
+        offset := type_info.offsets[i]
+        self_value := (^b32)(uintptr(&self) + offset)^
+        comparitor_value := (^b32)(uintptr(&comparitor_struct) + offset)^
+        
+        if !comparitor_value {
+            continue
+        }
+        if !self_value {
+            return false
+        }
+    }
+    return true
 }

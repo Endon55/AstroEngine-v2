@@ -160,6 +160,7 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
     
     features:= Vulkan_Feature_Requirements {
         device_features_11 = {
+            sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
             shaderDrawParameters = true,
         },
         device_features_12 = {
