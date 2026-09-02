@@ -177,8 +177,8 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
     }
     features.device_extensions = make([dynamic]cstring, context.allocator)
     append(&features.device_extensions, vk.KHR_SWAPCHAIN_EXTENSION_NAME, vk.KHR_PIPELINE_LIBRARY_EXTENSION_NAME, vk.EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)
+    log.debugf("---Creating Instance")
     create_vk_instance(&self.vk_context, features, self) or_return
-
     self.vk_instance = self.vk_context.vk_instance
     vk_check(glfw.CreateWindowSurface(self.vk_instance, self.window, self.vk_context.allocation_callbacks , &self.vk_surface),) or_return
 
@@ -186,7 +186,9 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
         vk.DestroySurfaceKHR(self.vk_instance, self.vk_surface, nil)
     }
 
+    log.debugf("---Selecting Physical Device")
     select_vk_physical_device(&self.vk_context, self.vk_surface) or_return
+    log.debugf("---Creating Logical Device")
     create_vk_logical_device(&self.vk_context) or_return
 
     self.vk_physical_device = self.vk_context.physical_device.vk_physical_device

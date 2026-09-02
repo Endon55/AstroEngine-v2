@@ -5,6 +5,8 @@ import "vendor:glfw"
 import "core:log"
 import "core:slice"
 import "base:runtime"
+import "core:reflect"
+import "base:intrinsics"
 
 
 
@@ -46,11 +48,11 @@ Physical_Device::struct{
 
     has_universal_queue_family: bool,
     properties : vk.PhysicalDeviceProperties,
+    feature_chain: vk.PhysicalDeviceFeatures2,
     features : vk.PhysicalDeviceFeatures,
     features_11: vk.PhysicalDeviceVulkan11Features, 
     features_12: vk.PhysicalDeviceVulkan12Features,
     features_13: vk.PhysicalDeviceVulkan13Features,
-    features_14: vk.PhysicalDeviceVulkan14Features,
     extensions: []vk.ExtensionProperties,
     surface_capabilities: vk.SurfaceCapabilitiesKHR,
     surface_formats: []vk.SurfaceFormatKHR,
@@ -65,7 +67,6 @@ Vulkan_Feature_Requirements::struct{
     device_features_11: vk.PhysicalDeviceVulkan11Features,
     device_features_12: vk.PhysicalDeviceVulkan12Features,
     device_features_13: vk.PhysicalDeviceVulkan13Features,
-    device_features_14: vk.PhysicalDeviceVulkan14Features,
     device_extensions: [dynamic]cstring,
 }
 
@@ -124,7 +125,7 @@ create_vk_instance :: proc(self: ^Vulkan_Creation_Context, feature_requirements:
     vk.load_proc_addresses(self.vk_instance)
 
     when ODIN_DEBUG {
-        log.debugf("Adding debug callback to Vulkan")
+        log.debugf("---Adding debug callback to Vulkan")
 
 
    
@@ -190,10 +191,6 @@ create_vk_logical_device :: proc(self: ^Vulkan_Creation_Context)  -> (ok: bool,)
 
     // ta := context.temp_allocator
 
-    buffer_device_address_features:= vk.PhysicalDeviceBufferDeviceAddressFeatures {
-        sType = .PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
-        bufferDeviceAddress = true,
-    }
 
     queue_priority: f32 = 1.0
     device_queue_create_info := vk.DeviceQueueCreateInfo {
@@ -205,10 +202,10 @@ create_vk_logical_device :: proc(self: ^Vulkan_Creation_Context)  -> (ok: bool,)
 
     device_create_info := vk.DeviceCreateInfo {
         sType = .DEVICE_CREATE_INFO,
-        pNext = &buffer_device_address_features,
+        pNext = &self.physical_device.feature_chain,
         pQueueCreateInfos = &device_queue_create_info,
         queueCreateInfoCount = 1,
-        pEnabledFeatures = &self.physical_device.features,
+        //pEnabledFeatures = &self.physical_device.features,
         enabledExtensionCount = u32(len(self.vk_feature_requirements.device_extensions)),
         ppEnabledExtensionNames = raw_data(self.vk_feature_requirements.device_extensions),
     }
@@ -281,14 +278,10 @@ query_physical_device ::proc(self: ^Physical_Device, surface: vk.SurfaceKHR){
     vk.GetPhysicalDeviceProperties(self.vk_physical_device, &self.properties)
 
     vk.GetPhysicalDeviceFeatures(self.vk_physical_device, &self.features)
-    
-    self.features_14 = {
-        sType = .PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
-        pNext = nil,
-    }
+
     self.features_13 = {
         sType = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-        pNext = &self.features_14,
+        pNext = nil,
     }
     self.features_12 = {
         sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
@@ -299,14 +292,14 @@ query_physical_device ::proc(self: ^Physical_Device, surface: vk.SurfaceKHR){
         pNext = &self.features_12,
     }
 
-
-    feature_chain := vk.PhysicalDeviceFeatures2 {
+    self.feature_chain = {
         sType = .PHYSICAL_DEVICE_FEATURES_2,
         pNext = &self.features_11,
+        //features = self.features
     }
 
-    vk.GetPhysicalDeviceFeatures2(self.vk_physical_device, &feature_chain)
-
+    vk.GetPhysicalDeviceFeatures2(self.vk_physical_device, &self.feature_chain)
+    self.feature_chain.features = self.features
     extension_count: u32
 
     vk.EnumerateDeviceExtensionProperties(self.vk_physical_device, nil, &extension_count, nil)
@@ -328,6 +321,7 @@ query_physical_device ::proc(self: ^Physical_Device, surface: vk.SurfaceKHR){
             self.universal_queue_family_index = (u32(i))
         }
     }
+
 
     vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(self.vk_physical_device, surface, &self.surface_capabilities)
 
@@ -355,7 +349,7 @@ evaluate_physical_device :: proc(self: Physical_Device, requirements: Vulkan_Fea
 
     suitable = true
     score = 0
-    suitable = self.has_universal_queue_family && len(self.surface_formats) > 0 && len(self.surface_present_modes) > 0 //&& supports_all_features(self, requirements)
+    suitable = self.has_universal_queue_family && len(self.surface_formats) > 0 && len(self.surface_present_modes) > 0 && supports_all_features(self, requirements)
     if !suitable {
         return suitable, score
     }
@@ -393,8 +387,10 @@ supports_all_features :: proc(self: Physical_Device, reqs: Vulkan_Feature_Requir
 
 
 
-    return compare_structs(self.features, reqs.device_features) &&
-            compare_structs(self.features, reqs.device_features_11)
+    return compare_features_structs(self.features, reqs.device_features) &&
+            compare_features_structs(self.features_11, reqs.device_features_11) &&
+            compare_features_structs(self.features_12, reqs.device_features_12) &&
+            compare_features_structs(self.features_13, reqs.device_features_13)
 }
 
 
@@ -539,7 +535,7 @@ swapchain_get_image_views :: proc (self: Swapchain_Context, images :[]vk.Image, 
 device_get_universal_queue :: proc (self: Vulkan_Creation_Context) ->(out_queue: vk.Queue, err: bool) {
 
     vk.GetDeviceQueue(self.vk_device, self.physical_device.universal_queue_family_index, 0, &out_queue)
-    return
+    return out_queue, err
 
 }
 
@@ -549,24 +545,38 @@ device_get_universal_queue__index :: proc (self: Vulkan_Creation_Context) -> (in
 }
 
 compare_features_structs :: proc (self, comparitor_struct: $T) -> (suitable: bool) {
+    self := self
+    comparitor_struct := comparitor_struct
 
-    if !intrinsics.type_is_struct(T) {
-        return false
-    } 
-
-    type_info := reflect.Type_Info_Struct(T)
+    named_type_info := type_info_of(T)
     
-    for i in 0..<type_info.field_count {
-        
-        offset := type_info.offsets[i]
-        self_value := (^b32)(uintptr(&self) + offset)^
-        comparitor_value := (^b32)(uintptr(&comparitor_struct) + offset)^
-        
-        if !comparitor_value {
-            continue
-        }
-        if !self_value {
-            return false
+    /*
+        reflection is weird in odin. being a named type supercedes being a struct. So since we're querying vk.PhysicalDeviceFeatures** that is a named type. The info_named type struct then points to the info_struct where you can query the fields.
+    */
+
+    #partial switch super_type in named_type_info.variant {
+    case runtime.Type_Info_Named:
+        #partial switch type_info in super_type.base.variant {
+        case runtime.Type_Info_Struct:
+            for i in 0..<type_info.field_count {
+
+                if type_info.names[i] == "sType" || type_info.names[i] == "pNext"{
+                    continue;
+                }
+
+                offset := type_info.offsets[i]
+                self_value := (^b32)(uintptr(&self) + offset)^
+                comparitor_value := (^b32)(uintptr(&comparitor_struct) + offset)^
+                if !comparitor_value {
+                    continue
+                }
+                if !self_value {
+                    log.debugf("Doesn't support required features in %s", super_type.name)
+                    log.debugf("Feature (%s) Supported: %v, Requested: %v", type_info.names[i], self_value, comparitor_value)
+                    return false
+                }
+            }
+
         }
     }
     return true
