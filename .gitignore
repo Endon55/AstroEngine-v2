@@ -3,3 +3,4 @@ Astro2.bin
 /.linker_libs
 /.vscode
 /shaders/compiled/
+/build/assets/
