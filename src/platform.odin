@@ -42,13 +42,19 @@ glfw_error_callback::proc "c" (error:i32, description: cstring) {
     context.logger = g_logger
     log.errorf("GLFW [%d]: %s", error, description)
 }
+glfw_key_callback:: proc "c"(window: glfw.WindowHandle, key, scancode, action, mods :i32){
+
+
+    if key == glfw.KEY_ESCAPE{
+       glfw.SetWindowShouldClose(window, true) 
+    }
+}
 
 @(require_results)
 create_window::proc(title: string, width, height: u32) ->(window: glfw.WindowHandle, ok: bool) {
     ensure(bool(glfw.Init()), "Failed to initialize GLFW")
 
     glfw.SetErrorCallback(glfw_error_callback)
-
     runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
     c_title:= strings.clone_to_cstring(title, context.temp_allocator)
 
@@ -62,6 +68,9 @@ create_window::proc(title: string, width, height: u32) ->(window: glfw.WindowHan
 
         return
     }
+
+    glfw.SetKeyCallback(window, glfw_key_callback)
+
     return window, true
 }
 

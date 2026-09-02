@@ -193,129 +193,7 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
 
     self.vk_physical_device = self.vk_context.physical_device.vk_physical_device
     self.vk_device = self.vk_context.vk_device
-
-
-    // log.debugf("Creating Vulkan Instance")
-    // instance_builder: vkb.Instance_Builder
-    // vkb.instance_builder_init(&instance_builder, ta)
-    //
-    // vkb.instance_builder_set_app_name(&instance_builder, "Astro2")
-    // vkb.instance_builder_require_api_version(&instance_builder, vk.API_VERSION_1_3)
-    //
-    // when ODIN_DEBUG {
-    //     log.debugf("Adding debug callback to  Vulkan")
-    //     vkb.instance_builder_request_validation_layers(&instance_builder)
-    //
-    //     default_debug_callback :: proc "system" (message_severity: vk.DebugUtilsMessageSeverityFlagsEXT, message_types: vk.DebugUtilsMessageTypeFlagsEXT,
-    //         p_callback_data: ^vk.DebugUtilsMessengerCallbackDataEXT, p_user_data: rawptr) -> b32 {
-    //
-    //         context = runtime.default_context()
-    //         context.logger = g_logger
-    //
-    //         if .WARNING in message_severity {
-    //             log.warnf("[%v]: %s", message_types, p_callback_data.pMessage)
-    //         } else if .ERROR in message_severity {
-    //             log.errorf("[%v]: %s", message_types, p_callback_data.pMessage)
-    //             //runtime.debug_trap()
-    //         } else {
-    //             log.infof("[%v]: %s", message_types, p_callback_data.pMessage)
-    //         }
-    //
-    //         return false
-    //     }
-        // vkb.instance_builder_set_debug_callback(&instance_builder, default_debug_callback)
-        // vkb.instance_builder_set_debug_callback_user_data_pointer(&instance_builder, self)
-
-    //     VK_LAYER_LUNARG_MONITOR :: "VK_LAYER_LUNARG_monitor"
-    //
-    //     info: vkb.System_Info
-    //     info_err := vkb.system_info_init(&info, allocator = ta)
-    //     if info_err != nil {
-    //         log.errorf("Failed to get system info: %#v", info_err)
-    //     }
-    //
-    //     if vkb.system_info_is_layer_available(info, VK_LAYER_LUNARG_MONITOR) {
-    //         when ODIN_OS == .Windows || ODIN_OS == .Linux {
-    //             vkb.instance_builder_enable_layer(&instance_builder, VK_LAYER_LUNARG_MONITOR)
-    //         }
-    //     }
-    //}
-    // vkb_instance_err := vkb.instance_builder_build(&instance_builder, &self.vkb.instance)
-    // if vkb_instance_err != nil {
-    //     log.errorf("Failed to build instance: %#v", vkb_instance_err)
-    //     return
-    // }
-    // defer if !ok {
-    //     vkb.destroy_instance(&self.vkb.instance)
-     // }
-    //
-    // self.vk_instance = self.vkb.instance.vk_instance
-    //
-
-    // log.debugf("Creating window surface")
-    // vk_check(glfw.CreateWindowSurface(self.vk_instance, self.window, nil, &self.vk_surface),) or_return
-    // defer if !ok {
-    //     vkb.destroy_surface(&self.vkb.instance, self.vk_surface)
-    // }
-    //
-    // features_11 := vk.PhysicalDeviceVulkan11Features {
-    //     shaderDrawParameters = true,
-    // }
-    // features_12 := vk.PhysicalDeviceVulkan12Features {
-    //     sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-    //     bufferDeviceAddress = true,
-    //     descriptorIndexing = true,
-    //     vulkanMemoryModelAvailabilityVisibilityChains = false,
-    // }
-    // features_13 := vk.PhysicalDeviceVulkan13Features {
-    //     dynamicRendering = true,
-    //     synchronization2 = true,
-    // }
-    // log.debugf("Selecting physical device")
-    // selector: vkb.Physical_Device_Selector
-    // vkb.physical_device_selector_init(&selector, self.vkb.instance, ta)
-    //
-    // vkb.physical_device_selector_set_minimum_version(&selector, vk.API_VERSION_1_3)
-    // // vkb.physical_device_selector_add_required_extension_features(&selector, features_12)
-    // vkb.physical_device_selector_set_required_features_13(&selector, features_13)
-    // vkb.physical_device_selector_set_required_features_12(&selector, features_12)
-    // vkb.physical_device_selector_set_required_features_11(&selector, features_11)
-    // vkb.physical_device_selector_set_surface(&selector, self.vk_surface)
-    //
-    //
-    // vkb_physical_device_err := vkb.physical_device_selector_select(&selector, &self.vkb.physical_device)
-    // if vkb_physical_device_err != nil {
-    //     log.errorf("Failed to select physical device: %#v", vkb_physical_device_err)
-    //     return
-    // }
-    // defer if !ok {
-    //     vkb.destroy_physical_device(&self.vkb.physical_device)
-    // }
-    //
-    // self.vk_physical_device = self.vkb.physical_device.vk_physical_device
-    // device_properties := vk.PhysicalDeviceProperties2{
-    //     sType = .PHYSICAL_DEVICE_PROPERTIES_2
-    // }
-    // // self.vkb.physical_device.vulkan_1_2_features.vulkanMemoryModelAvailabilityVisibilityChains = false
-    // vk.GetPhysicalDeviceProperties2(self.vk_physical_device, &device_properties)
-    // str := string(cstring(&device_properties.properties.deviceName[0]))
-    // log.debugf("Physical Device Name: %v", str)
-    //
-    // log.debugf("Building vk.device builder")
-    // device_builder: vkb.Device_Builder
-    // vkb.device_builder_init(&device_builder, ta)
-    // log.debugf("Building vk.device")
-    // // vkb.device_builder_add_pnext(&device_builder, &features_12)
-    // log.debugf("Extensions: %#v", &self.vkb.physical_device.extended_features_chain)
-    //
-    // vkb_device_err := vkb.device_builder_build(&device_builder, &self.vkb.physical_device, &self.vkb.device)
-    // if vkb_device_err != nil {
-    //     log.errorf("Failed to get logical device: %#v", vkb_device_err)
-    //     return
-    // }
-    // defer if !ok {
-    //     vkb.destroy_device(&self.vkb.device)    
-    // }
+    
     log.debugf("Setting up deletion queue and allocators")
     deletion_queue_init(&self.main_deletion_queue, self.vk_device)
 
@@ -344,36 +222,11 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
 engine_create_swapchain :: proc(self: ^Engine, extent: vk.Extent2D) -> (ok: bool) {
 
     ta := context.temp_allocator
-
-    //
-    // runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
-    //
-    // self.swapchain_format = .B8G8R8A8_UNORM
-    //
-    // builder: vkb.Swapchain_Builder
-    // vkb.swapchain_builder_init(&builder, self. vkb.device, ta)
-    //
-    // vkb.swapchain_builder_set_desired_format(&builder, {format = self.swapchain_format, colorSpace = .SRGB_NONLINEAR})
-    // //FIFO turns on vsync 
-    // vkb.swapchain_builder_set_desired_present_mode(&builder, .FIFO)
-    // vkb.swapchain_builder_set_desired_present_mode(&builder, .IMMEDIATE)
-    // vkb.swapchain_builder_set_desired_present_mode(&builder, .MAILBOX)
-    // vkb.swapchain_builder_set_desired_extent(&builder, extent.width, extent.height)
-    // vkb.swapchain_builder_add_image_usage_flags(&builder, {.TRANSFER_DST})
-    //
-    // swapchain_err := vkb.swapchain_builder_build(&builder, &self.vkb.swapchain)
-    //
-    // if swapchain_err != nil {
-    //     log.errorf("Failed to build swapchain: %#v", swapchain_err)
-    //     return
-    // }
-    
-
     create_vk_swapchain(&self.vk_context.swapchain_context, extent.width, extent.height)
 
     self.vk_swapchain = self.vk_context.swapchain_context.vk_swapchain
     self.swapchain_extent = self.vk_context.swapchain_context.vk_extent
-
+    self.swapchain_format = self.vk_context.swapchain_context.vk_surface_format.format
     swapchain_images, swapchain_images_err := swapchain_get_images(self.vk_context.swapchain_context)
 
     if swapchain_images_err != false {
@@ -395,7 +248,7 @@ engine_create_swapchain :: proc(self: ^Engine, extent: vk.Extent2D) -> (ok: bool
         log.errorf("Failed to get graphics queue: %#v", graphics_queue_err)
     }
 
-    graphics_queue_family, graphics_queue_family_err := device_get_universal_queue__index(self.vk_context)
+    graphics_queue_family, graphics_queue_family_err := device_get_universal_queue_index(self.vk_context)
     if graphics_queue_family_err != false {
         log.errorf("Failed to get graphics queue family: %#v", graphics_queue_family_err)
     }
@@ -416,8 +269,8 @@ engine_create_swapchain :: proc(self: ^Engine, extent: vk.Extent2D) -> (ok: bool
 }
 
 engine_destroy_swapchain :: proc(self: ^Engine) {
-    vkb.destroy_swapchain(&self.vkb.swapchain)
-    vkb.swapchain_destroy_image_views(self.vkb.swapchain, self.swapchain_image_views)
+    destroy_swapchain(&self.vk_context.swapchain_context)
+    swapchain_destroy_image_views(self.vk_context.swapchain_context, self.swapchain_image_views)
 
     for semaphore in self.swapchain_image_semaphores {
         vk.DestroySemaphore(self.vk_device, semaphore, nil)
@@ -598,7 +451,6 @@ engine_init_mesh_pipeline :: proc(self: ^Engine) -> (ok: bool) {
     builder.pipeline_layout = self.mesh_pipeline_layout
 
     pipeline_builder_set_shaders(&builder, mesh_vertex_shader, mesh_frag_shader)
-
     
     pipeline_builder_set_input_topology(&builder, .TRIANGLE_LIST)
 
@@ -869,10 +721,10 @@ engine_cleanup :: proc(self: ^Engine) {
     engine_destroy_swapchain(self)
 
     vk.DestroySurfaceKHR(self.vk_instance, self.vk_surface, nil)
-    vkb.destroy_device(&self.vkb.device)
+    destroy_device(&self.vk_context)
 
-    vkb.destroy_physical_device(&self.vkb.physical_device)
-    vkb.destroy_instance(&self.vkb.instance)
+    destroy_physical_device(&self.vk_context.physical_device)
+    destroy_instance(&self.vk_context)
 
     destroy_window(self.window)
 }
@@ -1055,44 +907,40 @@ engine_ui_definition :: proc(self: ^Engine) {
             }
             im.EndCombo()
         }
-
         im.InputFloat4("data1", &selected.data.data1)
         im.InputFloat4("data2", &selected.data.data2)
         im.InputFloat4("data3", &selected.data.data3)
         im.InputFloat4("data4", &selected.data.data4)
-
     }
     im.End() 
     im.Render()
-
 }
-
 
 @(require_results)
 engine_run :: proc(self: ^Engine) -> (ok: bool) {
-    // monitor_info := get_primary_monitor_info()
-    // t: Timer
-    // timer_init(&t, monitor_info.refresh_rate)
-    //
+    monitor_info := get_primary_monitor_info()
+    t: Timer
+    timer_init(&t, monitor_info.refresh_rate)
+
     log.info("Entering main loop...")
     for !glfw.WindowShouldClose(self.window) {
         glfw.PollEvents()
-        //
-        // if self.stop_rendering {
-        //     glfw.WaitEvents()
-        //     timer_init(&t, monitor_info.refresh_rate)
-        //     continue
-        // }
-        //
-        // timer_tick(&t)
-        // engine_ui_definition(self)
-        // engine_draw(self) or_return
-        //
-        // when ODIN_DEBUG {
-        //     if timer_check_fps_updated(t) {
-        //         window_update_title_with_fps(self.window, TITLE, timer_get_fps(t))
-        //     }
-        // }
+
+        if self.stop_rendering {
+            glfw.WaitEvents()
+            timer_init(&t, monitor_info.refresh_rate)
+            continue
+        }
+
+        timer_tick(&t)
+        engine_ui_definition(self)
+        engine_draw(self) or_return
+
+        when ODIN_DEBUG {
+            if timer_check_fps_updated(t) {
+                window_update_title_with_fps(self.window, TITLE, timer_get_fps(t))
+            }
+        }
     }
 
     log.info("Exiting...")

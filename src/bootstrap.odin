@@ -5,8 +5,6 @@ import "vendor:glfw"
 import "core:log"
 import "core:slice"
 import "base:runtime"
-import "core:reflect"
-import "base:intrinsics"
 
 
 
@@ -149,12 +147,6 @@ select_vk_physical_device :: proc(self: ^Vulkan_Creation_Context, vk_surface: vk
     self.vk_surface = vk_surface
     self.swapchain_context.vk_surface = self.vk_surface
 
-    // self.physical_device_requirements.extensions = make([dynamic]cstring, context.allocator)
-    // append(&self.physical_device_requirements.extensions, vk.KHR_SWAPCHAIN_EXTENSION_NAME)
-    //
-    // append(&self.physical_device_requirements.extensions, vk.KHR_PIPELINE_LIBRARY_EXTENSION_NAME)
-    // append(&self.physical_device_requirements.extensions, vk.EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)
-    //
     physical_device_count: u32  
     vk_check(vk.EnumeratePhysicalDevices(self.vk_instance, &physical_device_count, nil)) or_return
     
@@ -177,10 +169,17 @@ select_vk_physical_device :: proc(self: ^Vulkan_Creation_Context, vk_surface: vk
         }
     }
     
+    for i in 0..<physical_device_count {
+        if best_device == -1 || i32(i) != best_device {
+            destroy_physical_device(&physical_devices[i])
+        }
+    }
+
     if best_device == -1 {
         log.debugf("Test")
         return false
     } 
+
 
     self.physical_device = physical_devices[best_device]
 
@@ -188,10 +187,6 @@ select_vk_physical_device :: proc(self: ^Vulkan_Creation_Context, vk_surface: vk
 }
 
 create_vk_logical_device :: proc(self: ^Vulkan_Creation_Context)  -> (ok: bool,) {
-
-    // ta := context.temp_allocator
-
-
     queue_priority: f32 = 1.0
     device_queue_create_info := vk.DeviceQueueCreateInfo {
         sType = .DEVICE_QUEUE_CREATE_INFO,
@@ -265,11 +260,38 @@ create_vk_swapchain ::proc(self: ^Swapchain_Context, width, height :u32 ) -> (ok
     return true
 }
 
-
 /* ***************************************************************
    -----------------------Helper Functions------------------------
    ************************************************************ */
 
+destroy_instance :: proc(self: ^Vulkan_Creation_Context, loc := #caller_location) {
+    assert(self != nil, "Invalid Instance", loc)
+    assert(self.vk_instance != nil, "Invalid vk.Instance handle", loc)
+    assert(self.vk_feature_requirements.device_extensions != nil, "Invalid Device Extensions", loc)
+
+    vk.DestroyDebugUtilsMessengerEXT(self.vk_instance, self.vk_debug_messenger, self.allocation_callbacks)
+
+    vk.DestroyInstance(self.vk_instance, self.allocation_callbacks)
+
+    delete(self.vk_feature_requirements.device_extensions)
+}
+
+destroy_physical_device :: proc(self: ^Physical_Device, loc := #caller_location) {
+    assert(self != nil, "Invalid physical device", loc)
+    assert(self.vk_physical_device != nil, "Invalid vk.PhysicalDevice", loc)
+
+    delete(self.queue_families)
+    delete(self.extensions)
+    delete(self.surface_formats)
+    delete(self.surface_present_modes)
+}
+
+destroy_device :: proc(self: ^Vulkan_Creation_Context, loc := #caller_location) {
+    assert(self != nil, "Invalid Vulkan Creation Context", loc)
+    assert(self.vk_device != nil, "Invalid vk.Device", loc)
+
+    vk.DestroyDevice(self.vk_device, self.allocation_callbacks)
+}
 
 
 @(private="file")
@@ -291,11 +313,9 @@ query_physical_device ::proc(self: ^Physical_Device, surface: vk.SurfaceKHR){
         sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
         pNext = &self.features_12,
     }
-
     self.feature_chain = {
         sType = .PHYSICAL_DEVICE_FEATURES_2,
         pNext = &self.features_11,
-        //features = self.features
     }
 
     vk.GetPhysicalDeviceFeatures2(self.vk_physical_device, &self.feature_chain)
@@ -322,7 +342,6 @@ query_physical_device ::proc(self: ^Physical_Device, surface: vk.SurfaceKHR){
         }
     }
 
-
     vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(self.vk_physical_device, surface, &self.surface_capabilities)
 
 
@@ -334,14 +353,11 @@ query_physical_device ::proc(self: ^Physical_Device, surface: vk.SurfaceKHR){
     }
     present_count: u32
     vk.GetPhysicalDeviceSurfacePresentModesKHR(self.vk_physical_device, surface, &present_count, nil)
+
     if present_count > 0 {
         self.surface_present_modes = make([]vk.PresentModeKHR, present_count, context.allocator)
         vk.GetPhysicalDeviceSurfacePresentModesKHR(self.vk_physical_device, surface, &present_count, raw_data(self.surface_present_modes))
     }
-    // for i in 0..<format_count {
-    //     format := self.surface_formats[i]
-    //     log.infof("Format: %#v", format)
-    // }
 }
 
 @(private="file")
@@ -367,9 +383,6 @@ evaluate_physical_device :: proc(self: Physical_Device, requirements: Vulkan_Fea
             suitable = false
         }
     }
-
-    
-
 
     #partial switch self.properties.deviceType {
     case .DISCRETE_GPU:
@@ -531,6 +544,21 @@ swapchain_get_image_views :: proc (self: Swapchain_Context, images :[]vk.Image, 
         return
 }
 
+swapchain_destroy_image_views :: proc(self:Swapchain_Context, views: []vk.ImageView, loc := #caller_location) {
+    for view in views {
+        assert(view != 0, "Invalid image view", loc)
+        vk.DestroyImageView(self.vk_device, view, self.allocation_callbacks)
+    }
+}
+
+
+destroy_swapchain :: proc (self: ^Swapchain_Context, loc:= #caller_location) {
+    assert(self != nil, "Invalid Swapchain", loc)
+
+    if self.vk_device != nil && self.vk_swapchain != 0 {
+        vk.DestroySwapchainKHR(self.vk_device, self.vk_swapchain, self.allocation_callbacks)
+    }
+}
 
 device_get_universal_queue :: proc (self: Vulkan_Creation_Context) ->(out_queue: vk.Queue, err: bool) {
 
@@ -539,7 +567,7 @@ device_get_universal_queue :: proc (self: Vulkan_Creation_Context) ->(out_queue:
 
 }
 
-device_get_universal_queue__index :: proc (self: Vulkan_Creation_Context) -> (index: u32, err: bool) {
+device_get_universal_queue_index :: proc (self: Vulkan_Creation_Context) -> (index: u32, err: bool) {
     
     return self.physical_device.universal_queue_family_index, false
 }
