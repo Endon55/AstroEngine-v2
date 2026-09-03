@@ -59,16 +59,16 @@ Engine::struct {
     main_deletion_queue: Deletion_Queue,
 
     draw_image: Allocated_Image,
+    depth_image: Allocated_Image,
     draw_extent: vk.Extent2D,
+
 
     gradient_pipeline_layout: vk.PipelineLayout,
     background_effects: [Compute_Effect_Kind]Compute_Effect,
     current_background_effect: Compute_Effect_Kind,
-    triangle_pipeline_layout: vk.PipelineLayout,
-    triangle_pipeline: vk.Pipeline,
     mesh_pipeline_layout: vk.PipelineLayout,
     mesh_pipeline: vk.Pipeline,
-    rectangle: GPU_Mesh_Buffers,
+    test_meshes: Mesh_Asset_List,
 
     global_descriptor_allocator: Descriptor_Allocator,
     draw_image_descriptors: vk.DescriptorSet,
@@ -288,6 +288,8 @@ engine_init_swapchain :: proc(self: ^Engine) -> (ok: bool){
         height = self.window_extent.height,
         depth = 1,
     }
+
+    //DRAW IMAGE
     self.draw_image.image_format = .R16G16B16A16_SFLOAT
     self.draw_image.image_extent = draw_image_extent
     self.draw_image.allocator = self.vma_allocator
@@ -319,6 +321,33 @@ engine_init_swapchain :: proc(self: ^Engine) -> (ok: bool){
     }
 
     deletion_queue_push(&self.main_deletion_queue, self.draw_image)
+
+
+    //DEPTH IMAGE
+    self.depth_image.image_format = .D32_SFLOAT
+    self.depth_image.image_extent = draw_image_extent
+    self.depth_image.allocator = self.vma_allocator
+    self.depth_image.device = self.vk_device
+
+    depth_image_usages := vk.ImageUsageFlags {
+        .DEPTH_STENCIL_ATTACHMENT,
+    }
+    
+    dimg_info := image_create_info(self.depth_image.image_format, depth_image_usages, draw_image_extent,)
+    
+    vk_check(vma.CreateImage(self.vma_allocator, dimg_info, rimg_allocinfo, &self.depth_image.image, &self.depth_image.allocation, nil)) or_return
+    defer if !ok {
+        vma.DestroyImage(self.vma_allocator, self.depth_image.image, nil)
+    }
+
+    dview_info := imageview_create_info(self.depth_image.image_format, self.depth_image.image, {.DEPTH},)
+
+    vk_check(vk.CreateImageView(self.vk_device, &dview_info, nil, &self.depth_image.image_view)) or_return
+    defer if !ok {
+        vk.DestroyImageView(self.vk_device, self.depth_image.image_view, nil)
+    }
+
+    deletion_queue_push(&self.main_deletion_queue, self.depth_image)
 
     return true
 }
@@ -462,54 +491,13 @@ engine_init_mesh_pipeline :: proc(self: ^Engine) -> (ok: bool) {
 
     pipeline_builder_disable_blending(&builder)
 
-    pipeline_builder_disable_depth_test(&builder)
+    pipeline_builder_enable_depth_test(&builder, true, .GREATER_OR_EQUAL)
 
     pipeline_builder_set_color_attachment_format(&builder, self.draw_image.image_format)
-    pipeline_builder_set_depth_attachment_format(&builder, .UNDEFINED)
+    pipeline_builder_set_depth_attachment_format(&builder, self.depth_image.image_format)
 
     self.mesh_pipeline = pipeline_builder_build(&builder, self.vk_device) or_return
     deletion_queue_push(&self.main_deletion_queue, self.mesh_pipeline)
-
-    return true
-}
-engine_init_triangle_pipeline :: proc(self: ^Engine) -> (ok: bool) {
-
-    triangle_frag_shader := create_shader_module(self.vk_device, #load("./../shaders/compiled/colored_triangle.frag.spv")) or_return
-    defer vk.DestroyShaderModule(self.vk_device, triangle_frag_shader, nil)
-
-    triangle_vert_shader := create_shader_module(self.vk_device, #load("./../shaders/compiled/colored_triangle.vert.spv")) or_return
-    defer vk.DestroyShaderModule(self.vk_device, triangle_vert_shader, nil)
-
-    pipeline_layout_info := pipeline_layout_create_info()
-    vk_check(vk.CreatePipelineLayout(self.vk_device, &pipeline_layout_info, nil, &self.triangle_pipeline_layout,)) or_return
-
-    deletion_queue_push(&self.main_deletion_queue, self.triangle_pipeline_layout)
-
-    
-    builder := pipeline_builder_create_default()
-
-    builder.pipeline_layout = self.triangle_pipeline_layout
-
-    pipeline_builder_set_shaders(&builder, triangle_vert_shader, triangle_frag_shader)
-
-    
-    pipeline_builder_set_input_topology(&builder, .TRIANGLE_LIST)
-
-    pipeline_builder_set_polygon_mode(&builder, .FILL)
-
-    pipeline_builder_set_cull_mode(&builder, vk.CullModeFlags_NONE, .CLOCKWISE)
-
-    pipeline_builder_set_multisampling_none(&builder)
-
-    pipeline_builder_disable_blending(&builder)
-
-    pipeline_builder_disable_depth_test(&builder)
-
-    pipeline_builder_set_color_attachment_format(&builder, self.draw_image.image_format)
-    pipeline_builder_set_depth_attachment_format(&builder, .UNDEFINED)
-
-    self.triangle_pipeline = pipeline_builder_build(&builder, self.vk_device) or_return
-    deletion_queue_push(&self.main_deletion_queue, self.triangle_pipeline)
 
     return true
 }
@@ -568,24 +556,11 @@ engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
 }
 
 engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
-    rect_vertices := [4]Vertex {
-        { position = {0.5,-0.5, 0},  color = { 0,0, 0.0, 1.0 }},
-        { position = {0.5,0.5, 0},   color = { 0.5, 0.5, 0.5 ,1.0 }},
-        { position = {-0.5,-0.5, 0}, color = { 1,0, 0.0, 1.0 }},
-        { position = {-0.5,0.5, 0},  color = { 0.0, 1.0, 0.0, 1.0 }},
+
+    self.test_meshes = load_gltf_meshes(self, "build/assets/basicmesh.glb") or_return
+    defer if !ok {
+        destroy_mesh_assets(&self.test_meshes)
     }
-
-    rect_indices := [6]u32 {
-        0, 1, 2,
-        2, 1, 3,
-    }
-    // odinfmt: enable
-
-    self.rectangle = upload_mesh(self, rect_indices[:], rect_vertices[:]) or_return
-
-    // Delete the rectangle data on engine shutdown
-    deletion_queue_push(&self.main_deletion_queue, self.rectangle.index_buffer)
-    deletion_queue_push(&self.main_deletion_queue, self.rectangle.vertex_buffer)
 
     return true
 }
@@ -609,8 +584,6 @@ engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) {
     vk_check(vk.CreatePipelineLayout(self.vk_device, &compute_layout, nil, & self.gradient_pipeline_layout), "Failed to create pipeline layout") or_return
     log.debugf("---Background Pipelines")
     engine_init_background_pipelines(self) or_return
-    log.debugf("---Triangle Pipelines")
-    engine_init_triangle_pipeline(self) or_return
     log.debugf("---Mesh Pipelines")
     engine_init_mesh_pipeline(self) or_return
 
@@ -717,6 +690,12 @@ engine_cleanup :: proc(self: ^Engine) {
         deletion_queue_destroy(&frame.deletion_queue)
     }
     
+    for &mesh in self.test_meshes {
+        destroy_buffer(mesh.mesh_buffers.index_buffer)
+        destroy_buffer(mesh.mesh_buffers.vertex_buffer)
+    }
+    destroy_mesh_assets(&self.test_meshes)
+
     deletion_queue_destroy(&self.main_deletion_queue)
     engine_destroy_swapchain(self)
 
@@ -731,10 +710,13 @@ engine_cleanup :: proc(self: ^Engine) {
 
 engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool) {
     color_attachment := attachment_info(self.draw_image.image_view, nil, .COLOR_ATTACHMENT_OPTIMAL)
-    render_info := rendering_info(self.draw_extent, &color_attachment, nil)
+    depth_attachment := depth_attachment_info(self.depth_image.image_view, .DEPTH_ATTACHMENT_OPTIMAL)
+
+    render_info := rendering_info(self.draw_extent, &color_attachment, &depth_attachment)
     vk.CmdBeginRendering(cmd, &render_info)
 
 
+    vk.CmdBindPipeline(cmd, .GRAPHICS, self.mesh_pipeline)
     viewport := vk.Viewport {
         x = 0,
         y = 0,
@@ -752,20 +734,27 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
     }
     vk.CmdSetScissor(cmd, 0, 1, & scissor)
 
-    vk.CmdBindPipeline(cmd, .GRAPHICS, self.triangle_pipeline)
-    vk.CmdDraw(cmd, 3, 1, 0, 0)
 
-    vk.CmdBindPipeline(cmd, .GRAPHICS, self.mesh_pipeline)
+
+
+    view := la.matrix4_translate_f32({0,0,-5})
+    projection := matrix4_perspective_reverse_z_f32(f32(la.to_radians(70.0)), f32(self.draw_extent.width) / f32(self.draw_extent.height), 0.1, true)
 
     push_constants := GPU_Draw_Push_Constants {
-        world_matrix = la.MATRIX4F32_IDENTITY,
-        vertex_buffer = self.rectangle.vertex_buffer_address,
+        world_matrix = projection * view,
+        vertex_buffer = self.test_meshes[2].mesh_buffers.vertex_buffer_address,
     }
 
     vk.CmdPushConstants(cmd, self.mesh_pipeline_layout, {.VERTEX}, 0, size_of(GPU_Draw_Push_Constants), &push_constants,)
+    
+    vk.CmdBindIndexBuffer(cmd, self.test_meshes[2].mesh_buffers.index_buffer.buffer, 0, .UINT32)
 
-    vk.CmdBindIndexBuffer(cmd, self.rectangle.index_buffer.buffer, 0, .UINT32)
-    vk.CmdDrawIndexed(cmd, 6, 1, 0, 0, 0)
+    vk.CmdDrawIndexed(cmd, self.test_meshes[2].surfaces[0].count, 1, self.test_meshes[2].surfaces[0].start_index, 0, 0)
+
+
+
+
+
 
     vk.CmdEndRendering(cmd)
 
@@ -832,6 +821,7 @@ engine_draw ::proc(self: ^Engine) -> (ok: bool){
 
 
     transition_image(cmd, self.draw_image.image, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL)
+    transition_image(cmd, self.depth_image.image, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL)
 
     engine_draw_geometry(self, cmd) or_return
     

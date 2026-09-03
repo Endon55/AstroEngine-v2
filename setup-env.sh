@@ -129,4 +129,15 @@ if [ ! -e "$src/odin/vendor/glfw/lib/libglfw3.a" ]; then
     ln -s $libs/glfw/build/src/libglfw3.a .
 fi
 
+cd $src/odin/vendor/cgltf/src
+
+
+if [ ! -e "$src/odin/vendor/cgltf/lib/cgltf.a" ]; then
+    echo "Building GLTF binary for odin"
+    
+    ./build_cgltf.sh
+fi
+
 exec bash
+
+exit
