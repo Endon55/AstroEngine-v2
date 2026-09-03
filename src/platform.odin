@@ -24,6 +24,13 @@ get_primary_monitor_info :: proc() -> (info: Monitor_Info) {
     return
 }
 
+get_monitor_resoution :: proc() -> (u32, u32) {
+
+    mode := glfw.GetVideoMode(glfw.GetPrimaryMonitor())
+    ensure(mode != nil)
+    return u32(mode.width), u32(mode.height)
+}
+
 window_update_title_with_fps :: proc(window: glfw.WindowHandle, title: string, fps: f64) {
     buffer: [WINDOW_TITLE_BUFFER_LEN]byte
     formatted := fmt.bprintf(buffer[:], "%s - FPS = %.2f", title, fps)

@@ -209,12 +209,15 @@ create_vk_logical_device :: proc(self: ^Vulkan_Creation_Context)  -> (ok: bool,)
 
     self.swapchain_context.physical_device = self.physical_device
     self.swapchain_context.vk_device = self.vk_device
-
     return true
 }
 
 create_vk_swapchain ::proc(self: ^Swapchain_Context, width, height :u32 ) -> (ok: bool,) {
+    old_swapchain_handle := self.vk_swapchain
 
+    //The capabilitiesget stale when resized, so we always refetch the capabilities to make sure we have the freshest variant.
+    vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(self.physical_device.vk_physical_device, self.vk_surface, &self.physical_device.surface_capabilities)
+    
     self.vk_extent = choose_swapchain_extents(self.physical_device.surface_capabilities, width, height)
     self.vk_present_mode = choose_swapchain_present_mode(self.physical_device)
     self.vk_surface_format = choose_swapchain_format(self.physical_device)
@@ -242,6 +245,7 @@ create_vk_swapchain ::proc(self: ^Swapchain_Context, width, height :u32 ) -> (ok
         compositeAlpha = {.OPAQUE},
         presentMode = choose_swapchain_present_mode(self.physical_device),
         clipped = true,
+        oldSwapchain = self.vk_swapchain,
     }
 
     queue_family_indices := []u32 {
@@ -255,8 +259,7 @@ create_vk_swapchain ::proc(self: ^Swapchain_Context, width, height :u32 ) -> (ok
         swapchain_create_info.imageSharingMode = .EXCLUSIVE
     }
     vk_check(vk.CreateSwapchainKHR(self.vk_device, &swapchain_create_info, self.allocation_callbacks, &self.vk_swapchain), "Failed to create swapchain") or_return
-
-
+    
     return true
 }
 
@@ -551,13 +554,11 @@ swapchain_destroy_image_views :: proc(self:Swapchain_Context, views: []vk.ImageV
     }
 }
 
+destroy_swapchain :: proc (vk_device: vk.Device, vk_swapchain: vk.SwapchainKHR, vk_allocation_callbacks: ^vk.AllocationCallbacks, loc:= #caller_location) {
+    assert(vk_device != nil, "Invalid Device Handle", loc)
+    assert(vk_swapchain != 0, "Invalid Swapchain Handle", loc)
 
-destroy_swapchain :: proc (self: ^Swapchain_Context, loc:= #caller_location) {
-    assert(self != nil, "Invalid Swapchain", loc)
-
-    if self.vk_device != nil && self.vk_swapchain != 0 {
-        vk.DestroySwapchainKHR(self.vk_device, self.vk_swapchain, self.allocation_callbacks)
-    }
+    vk.DestroySwapchainKHR(vk_device, vk_swapchain, vk_allocation_callbacks)
 }
 
 device_get_universal_queue :: proc (self: Vulkan_Creation_Context) ->(out_queue: vk.Queue, err: bool) {
