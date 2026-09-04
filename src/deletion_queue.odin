@@ -36,6 +36,8 @@ Resource :: union {
     Allocated_Image,
     Allocated_Buffer,
 
+    Descriptor_Allocator_Growable,
+
     }
     Deletion_Queue :: struct {
         device: vk.Device,
@@ -70,8 +72,6 @@ Resource :: union {
         if len(self.resources) == 0 {
             return
         }
-
-
 
         #reverse for &resource in self.resources {
             switch &res in resource {
@@ -111,8 +111,10 @@ Resource :: union {
                 destroy_buffer(res)
             case vma.Allocator:
                 vma.DestroyAllocator(res)
+            case Descriptor_Allocator_Growable:
+                descriptor_growable_destroy_pools(res)
             }
-        }
+       }
 
         clear(&self.resources)
     }

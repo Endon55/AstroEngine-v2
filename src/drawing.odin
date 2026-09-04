@@ -14,6 +14,9 @@ import im_vk "libs:imgui/backends/vulkan"
 
 
 engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool) {
+
+    frame := engine_get_current_frame(self)
+
     color_attachment := attachment_info(self.draw_image.image_view, nil, .COLOR_ATTACHMENT_OPTIMAL)
     depth_attachment := depth_attachment_info(self.depth_image.image_view, .DEPTH_ATTACHMENT_OPTIMAL)
 
@@ -22,6 +25,7 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
 
 
     vk.CmdBindPipeline(cmd, .GRAPHICS, self.mesh_pipeline)
+
     viewport := vk.Viewport {
         x = 0,
         y = 0,
@@ -39,9 +43,35 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
     }
     vk.CmdSetScissor(cmd, 0, 1, & scissor)
 
+    gpu_scene_data_buffer := create_buffer(self, size_of(GPU_Scene_Data), {.UNIFORM_BUFFER}, .CPU_TO_GPU) or_return
 
+    deletion_queue_push(&frame.deletion_queue, gpu_scene_data_buffer)
 
+    scene_uniform_data := cast(^GPU_Scene_Data)gpu_scene_data_buffer.info.pMappedData
+    scene_uniform_data^ = self.scene_data
 
+    global_descriptor := descriptor_growable_allocate(&frame.frame_descriptors, &self.gpu_scene_data_descriptor_layout,) or_return
+
+    writer: Descriptor_Writer
+    descriptor_writer_init(&writer, self.vk_device)
+    descriptor_writer_write_buffer(&writer,
+        binding = 0,
+        buffer = gpu_scene_data_buffer.buffer,
+        size = size_of(GPU_Scene_Data),
+        offset = 0,
+        type = .UNIFORM_BUFFER)
+    descriptor_writer_update_set(&writer, global_descriptor)
+
+    image_set := descriptor_growable_allocate(&frame.frame_descriptors, &self.single_image_descriptor_layout) or_return
+
+    {
+        writer: Descriptor_Writer
+        descriptor_writer_init(&writer, self.vk_device)
+        descriptor_writer_write_image(&writer, binding = 0, image = self.error_checkerboard_image.image_view, sampler = self.default_sampler_nearest, layout = .SHADER_READ_ONLY_OPTIMAL, type = .COMBINED_IMAGE_SAMPLER)
+
+        descriptor_writer_update_set(&writer, image_set)
+    }
+    vk.CmdBindDescriptorSets(cmd, .GRAPHICS, self.mesh_pipeline_layout, 0, 1, &image_set, 0, nil)
     view := la.matrix4_translate_f32({0,0,-5})
     projection := matrix4_perspective_reverse_z_f32(f32(la.to_radians(70.0)), f32(self.draw_extent.width) / f32(self.draw_extent.height), 0.1, true)
 
@@ -50,17 +80,13 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
         vertex_buffer = self.test_meshes[2].mesh_buffers.vertex_buffer_address,
     }
 
+
+
     vk.CmdPushConstants(cmd, self.mesh_pipeline_layout, {.VERTEX}, 0, size_of(GPU_Draw_Push_Constants), &push_constants,)
     
     vk.CmdBindIndexBuffer(cmd, self.test_meshes[2].mesh_buffers.index_buffer.buffer, 0, .UINT32)
 
     vk.CmdDrawIndexed(cmd, self.test_meshes[2].surfaces[0].count, 1, self.test_meshes[2].surfaces[0].start_index, 0, 0)
-
-
-
-
-
-
     vk.CmdEndRendering(cmd)
 
     return true
@@ -103,6 +129,7 @@ engine_draw ::proc(self: ^Engine) -> (ok: bool){
     vk_check(vk.ResetFences(self.vk_device, 1, &frame.render_fence)) or_return
 
     deletion_queue_flush(&frame.deletion_queue)
+    descriptor_growable_clear_pools(&frame.frame_descriptors)
 
     swapchain_image_index: u32 = ---
     result := vk.AcquireNextImageKHR(self.vk_device, self.vk_swapchain, 1e9, frame.swapchain_semaphore, 0, &swapchain_image_index,)

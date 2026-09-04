@@ -355,33 +355,71 @@ engine_init_descriptors:: proc(self: ^Engine) -> (ok:bool) {
         descriptor_layout_builder_init(&builder, self.vk_device)
         descriptor_layout_builder_add_binding(&builder, 0, .STORAGE_IMAGE)
         self.draw_image_descriptor_layout = descriptor_layout_builder_build(&builder, {.COMPUTE}) or_return
-    }
-    deletion_queue_push(&self.main_deletion_queue, self.draw_image_descriptor_layout)
 
-    self.draw_image_descriptors = descriptor_allocator_allocate(&self.global_descriptor_allocator, self.vk_device, &self.draw_image_descriptor_layout,) or_return
-    
-    img_info := vk.DescriptorImageInfo {
-        imageLayout = .GENERAL,
-        imageView = self.draw_image.image_view,
+        deletion_queue_push(&self.main_deletion_queue, self.draw_image_descriptor_layout)
     }
 
-    draw_image_write := vk.WriteDescriptorSet{
-        sType = .WRITE_DESCRIPTOR_SET,
-        dstBinding = 0,
-        dstSet = self.draw_image_descriptors,
-        descriptorCount = 1,
-        descriptorType = .STORAGE_IMAGE,
-        pImageInfo = &img_info,
+    self.draw_image_descriptors = descriptor_allocator_allocate(
+        &self.global_descriptor_allocator,
+        self.vk_device,
+        &self.draw_image_descriptor_layout,
+        ) or_return
+   
+    writer: Descriptor_Writer
+    descriptor_writer_init(&writer, self.vk_device)
+
+    descriptor_writer_write_image(
+        &writer,
+        binding = 0,
+        image = self.draw_image.image_view,
+        sampler = 0,
+        layout = .GENERAL,
+        type = .STORAGE_IMAGE,)
+
+    descriptor_writer_update_set(&writer, self.draw_image_descriptors)
+
+    for &frame in self.frames {
+        frame_sizes: Ratios
+        append(&frame_sizes, Pool_Size_Ratio{.STORAGE_IMAGE, 3})
+        append(&frame_sizes, Pool_Size_Ratio{.STORAGE_BUFFER, 3})
+        append(&frame_sizes, Pool_Size_Ratio{.UNIFORM_BUFFER, 3})
+        append(&frame_sizes, Pool_Size_Ratio{.COMBINED_IMAGE_SAMPLER, 4}) 
+
+        descriptor_growable_init(
+        &frame.frame_descriptors,
+        self.vk_device,
+        1000,
+        frame_sizes[:],
+        )
+
+        deletion_queue_push(&self.main_deletion_queue, frame.frame_descriptors)
     }
 
-    vk.UpdateDescriptorSets(self.vk_device, 1, &draw_image_write, 0, nil)
+    {
+        builder: Descriptor_Layout_Builder
+        descriptor_layout_builder_init(&builder, self.vk_device)
+        descriptor_layout_builder_add_binding(&builder, 0, .UNIFORM_BUFFER)
+        self.gpu_scene_data_descriptor_layout = descriptor_layout_builder_build(
+            &builder, {.VERTEX, .FRAGMENT}
+        ) or_return
+
+        deletion_queue_push(&self.main_deletion_queue, self.gpu_scene_data_descriptor_layout)
+    }
+
+    {
+        builder: Descriptor_Layout_Builder
+        descriptor_layout_builder_init(&builder, self.vk_device)
+        descriptor_layout_builder_add_binding(&builder, 0, .COMBINED_IMAGE_SAMPLER)
+        self.single_image_descriptor_layout = descriptor_layout_builder_build(&builder, {.FRAGMENT}) or_return
+        deletion_queue_push(&self.main_deletion_queue, self.single_image_descriptor_layout)
+    }
 
     return true
 }
 
 engine_init_mesh_pipeline :: proc(self: ^Engine) -> (ok: bool) {
 
-    mesh_frag_shader := create_shader_module(self.vk_device, #load("./../shaders/compiled/colored_triangle.frag.spv")) or_return
+    mesh_frag_shader := create_shader_module(self.vk_device, #load("./../shaders/compiled/tex_image.frag.spv")) or_return
     defer vk.DestroyShaderModule(self.vk_device, mesh_frag_shader, nil)
 
     mesh_vertex_shader := create_shader_module(self.vk_device, #load("./../shaders/compiled/colored_triangle_mesh.vert.spv")) or_return
@@ -396,6 +434,8 @@ engine_init_mesh_pipeline :: proc(self: ^Engine) -> (ok: bool) {
     pipeline_layout_info := pipeline_layout_create_info()
     pipeline_layout_info.pPushConstantRanges = &buffer_range
     pipeline_layout_info.pushConstantRangeCount = 1
+    pipeline_layout_info.pSetLayouts = &self.single_image_descriptor_layout
+    pipeline_layout_info.setLayoutCount = 1
     vk_check(vk.CreatePipelineLayout(self.vk_device, &pipeline_layout_info, nil, &self.mesh_pipeline_layout,)) or_return
 
     deletion_queue_push(&self.main_deletion_queue, self.mesh_pipeline_layout)
@@ -415,8 +455,8 @@ engine_init_mesh_pipeline :: proc(self: ^Engine) -> (ok: bool) {
 
     pipeline_builder_set_multisampling_none(&builder)
 
-    pipeline_builder_enable_blending_additive(&builder)
-
+    // pipeline_builder_enable_blending_additive(&builder)
+    pipeline_builder_disable_blending(&builder)
     pipeline_builder_enable_depth_test(&builder, true, .GREATER_OR_EQUAL)
 
     pipeline_builder_set_color_attachment_format(&builder, self.draw_image.image_format)
@@ -487,6 +527,45 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
     defer if !ok {
         destroy_mesh_assets(&self.test_meshes)
     }
+
+    white := pack_unorm_4x8({1,1,1,1})
+    self.white_image = create_image_from_data(self, &white, {1,1,1}, .R8G8B8A8_UNORM, {.SAMPLED}) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.white_image)
+
+    grey := pack_unorm_4x8({0.66,0.66,0.66,1})
+    self.grey_image = create_image_from_data(self, &grey, {1,1,1}, .R8G8B8A8_UNORM, {.SAMPLED}) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.grey_image)
+
+    black := pack_unorm_4x8({0,0,0,0})
+    self.black_image = create_image_from_data(self, &black, {1,1,1}, .R8G8B8A8_UNORM, {.SAMPLED}) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.black_image)
+
+    magenta := pack_unorm_4x8({1,0,1,1})
+    pixels: [16*16]u32
+    for x in 0..<16 {
+        for y in 0..<16 {
+            pixels[y * 16 + x] = ((x%2) ~ (y%2)) != 0 ? magenta: black
+        }
+    }
+    self.error_checkerboard_image = create_image_from_data(self, raw_data(pixels[:]), {16,16,1}, .R8G8B8A8_UNORM, {.SAMPLED}) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.error_checkerboard_image)
+
+    sampler_info := vk.SamplerCreateInfo {
+        sType = .SAMPLER_CREATE_INFO,
+        magFilter = .NEAREST,
+        minFilter = .NEAREST,
+    }
+
+    vk_check(vk.CreateSampler(self.vk_device, &sampler_info, nil, &self.default_sampler_nearest)) or_return
+
+    deletion_queue_push(&self.main_deletion_queue, self.default_sampler_nearest)
+
+    sampler_info.magFilter = .LINEAR
+    sampler_info.minFilter = .LINEAR
+
+    vk_check(vk.CreateSampler(self.vk_device, &sampler_info, nil, &self.default_sampler_linear)) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.default_sampler_linear)
+
 
     return true
 }

@@ -1,9 +1,9 @@
 package astro
 
 import "core:log"
-import "base:runtime"
-import "core:math"
 import la "core:math/linalg"
+
+import "base:runtime"
 
 import "vendor:glfw"
 import vk "vendor:vulkan"
@@ -73,6 +73,17 @@ Engine::struct {
     imm_fence: vk.Fence,
     imm_command_buffer: vk.CommandBuffer,
     imm_command_pool: vk.CommandPool,
+
+    scene_data: GPU_Scene_Data,
+    gpu_scene_data_descriptor_layout: vk.DescriptorSetLayout,
+
+    white_image: Allocated_Image,
+    black_image: Allocated_Image,
+    grey_image: Allocated_Image,
+    error_checkerboard_image: Allocated_Image,
+    default_sampler_linear: vk.Sampler,
+    default_sampler_nearest: vk.Sampler,
+    single_image_descriptor_layout: vk.DescriptorSetLayout,
 }
 
 Frame_Data :: struct {
@@ -81,6 +92,16 @@ Frame_Data :: struct {
     swapchain_semaphore: vk.Semaphore,
     render_fence: vk.Fence,
     deletion_queue: Deletion_Queue,
+    frame_descriptors: Descriptor_Allocator_Growable,
+}
+
+GPU_Scene_Data :: struct {
+    view: la.Matrix4x4f32,
+    proj: la.Matrix4x4f32,
+    viewproj: la.Matrix4x4f32,
+    ambient_color: la.Vector4f32,
+    sunlight_direction: la.Vector4f32,
+    sunlight_color: la.Vector4f32,
 }
 
 Compute_Push_Constants :: struct {

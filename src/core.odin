@@ -8,15 +8,6 @@ import la "core:math/linalg"
 import vma "libs:vma"
 import vk "vendor:vulkan"
 
-Allocated_Image :: struct {
-    device: vk.Device,
-    image: vk.Image,
-    image_view: vk.ImageView,
-    image_extent: vk.Extent3D,
-    image_format: vk.Format,
-    allocator: vma.Allocator,
-    allocation: vma.Allocation,
-}
 Allocated_Buffer :: struct {
     buffer: vk.Buffer,
     info: vma.AllocationInfo,
@@ -109,11 +100,6 @@ upload_mesh :: proc(self: ^Engine, indices: []u32, vertices: []Vertex,) -> (
     })
 
     return new_surface, true
-}
-
-destroy_image :: proc(self: Allocated_Image) {
-    vk.DestroyImageView(self.device, self.image_view, nil)
-    vma.DestroyImage(self.allocator, self.image, self.allocation)
 }
 
  @(require_results)
