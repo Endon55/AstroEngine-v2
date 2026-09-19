@@ -37,7 +37,7 @@ Resource :: union {
     Allocated_Buffer,
 
     Descriptor_Allocator_Growable,
-
+    Metallic_Roughness,
     }
     Deletion_Queue :: struct {
         device: vk.Device,
@@ -113,6 +113,8 @@ Resource :: union {
                 vma.DestroyAllocator(res)
             case Descriptor_Allocator_Growable:
                 descriptor_growable_destroy_pools(res)
+            case Metallic_Roughness:
+                metallic_roughness_clear_resources(res)
             }
        }
 

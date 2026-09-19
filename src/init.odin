@@ -345,7 +345,11 @@ engine_immediate_submit :: proc(self: ^Engine, data: $T,
 }
 
 engine_init_descriptors:: proc(self: ^Engine) -> (ok:bool) {
-    sizes := []Pool_Size_Ratio{{.STORAGE_IMAGE, 1}}
+    sizes := []Pool_Size_Ratio{
+        {.STORAGE_IMAGE, 1},
+        {.UNIFORM_BUFFER, 1},
+        {.COMBINED_IMAGE_SAMPLER, 2},
+    }
 
     descriptor_allocator_init_pool(&self.global_descriptor_allocator, self.vk_device, 10, sizes) or_return
     deletion_queue_push(&self.main_deletion_queue, self.global_descriptor_allocator.pool)
@@ -566,6 +570,37 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
     vk_check(vk.CreateSampler(self.vk_device, &sampler_info, nil, &self.default_sampler_linear)) or_return
     deletion_queue_push(&self.main_deletion_queue, self.default_sampler_linear)
 
+    material_resources := Metallic_Roughness_Resources {
+        color_image = self.white_image,
+        color_sampler = self.default_sampler_linear,
+        metal_rough_image = self.white_image,
+        metal_rough_sampler = self.default_sampler_linear,
+    }
+
+    material_constants := create_buffer(
+                            self,
+                            size_of(Metallic_Roughness_Constants),
+                            {.UNIFORM_BUFFER},
+                            .CPU_TO_GPU,) or_return
+    deletion_queue_push(&self.main_deletion_queue, material_constants)
+
+    scene_uniform_data := 
+        cast(^Metallic_Roughness_Constants)material_constants.info.pMappedData
+
+    scene_uniform_data.color_factors = {1,1,1,1}
+    scene_uniform_data.metal_rough_factors = {1,0.5,0,0}
+
+    material_resources.data_buffer = material_constants.buffer
+    material_resources.data_buffer_ffset = 0
+
+    self.default_material_data = metallic_roughness_write(
+        &self.metal_rough_material,
+        self.vk_device,
+        .Main_Color,
+        &material_resources,
+        &self.global_descriptor_allocator
+    ) or_return
+    
 
     return true
 }
@@ -591,6 +626,9 @@ engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) {
     engine_init_background_pipelines(self) or_return
     log.debugf("---Mesh Pipelines")
     engine_init_mesh_pipeline(self) or_return
+    metallic_roughness_build_pipeline(&self.metal_rough_material, self) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.metal_rough_material)
+
 
     return true
 }

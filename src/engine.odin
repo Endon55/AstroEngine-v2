@@ -84,8 +84,23 @@ Engine::struct {
     default_sampler_linear: vk.Sampler,
     default_sampler_nearest: vk.Sampler,
     single_image_descriptor_layout: vk.DescriptorSetLayout,
+
+    default_material_data: Material_Instance,
+    metal_rough_material: Metallic_Roughness,
 }
 
+Render_Object :: struct {
+    index_count: u32,
+    first_index: u32,
+    index_buffer: vk.Buffer,
+    material: ^Material_Instance,
+    transform: la.Matrix4f32,
+    vertex_buffer_address: vk.DeviceAddress,
+}
+// Renderable :: struct {
+//     draw: proc(self: ^Renderable, top_matrix: la.Matrix4x4f32, ctx: ^Draw_Context),
+// }
+//
 Frame_Data :: struct {
     command_pool: vk.CommandPool,
     main_command_buffer : vk.CommandBuffer,
@@ -122,6 +137,7 @@ Compute_Effect :: struct {
     layout:   vk.PipelineLayout,
     data:     Compute_Push_Constants,
 }
+
 @(private)
 g_logger: log.Logger
 //The modulous here isn't that expensive since FRAME_OVERLAP is a power of 2
