@@ -9,83 +9,8 @@ import im "libs:imgui"
 import im_glfw "libs:imgui/backends/glfw"
 import im_vk "libs:imgui/backends/vulkan"
 
-Render_Object :: struct {
-    index_count: u32,
-    first_index: u32,
-    index_buffer: vk.Buffer,
-    material: ^Material_Instance,
-    transform: la.Matrix4f32,
-    vertex_buffer_address: vk.DeviceAddress,
-}
 
-Draw_Context :: struct {
-    opaque_surfaces: [dynamic]Render_Object
-}
-
-Renderable :: struct {
-    draw: proc(self: ^Renderable, top_matrix: la.Matrix4x4f32, ctx: ^Draw_Context),
-}
-
-Node :: struct {
-    using renderable: Renderable,
-    parent: ^Node,
-    children: [dynamic]^Node,
-    local_transform: la.Matrix4x4f32,
-    world_transform: la.Matrix4x4f32,
-}
-
-Mesh_Node :: struct {
-    using node: Node,
-    mesh: ^Mesh_Asset,
-}
-
-node_init :: proc(node: ^Node) {
-    node.local_transform = la.MATRIX4F32_IDENTITY
-    node.world_transform = la.MATRIX4F32_IDENTITY
-    node.draw = node_draw
-}
-
-node_refresh_transform :: proc(node: ^Node, parent_matrix: la.Matrix4x4f32) {
-    node.world_transform = la.matrix_mul(parent_matrix, node.local_transform)
-    for &child in node.children {
-        node_refresh_transform(child, node.world_transform)
-    }
-}
-
-node_draw :: proc(self: ^Renderable, top_matrix: la.Matrix4x4f32, ctx: ^Draw_Context) {
-    node := cast(^Node) self
-    for &child in node.children {
-        child.draw(cast(^Renderable) child, top_matrix, ctx)
-    }
-}
-
-mesh_node_init :: proc(mesh_node: ^Mesh_Node) {
-    node_init(cast(^Node) mesh_node)
-    mesh_node.draw = mesh_node_draw
-}
-
-mesh_node_draw :: proc(self: ^Renderable, top_matrix: la.Matrix4x4f32, ctx: ^Draw_Context) {
-    mesh_node := cast(^Mesh_Node) self
-
-    node_matrix := la.matrix_mul(top_matrix, mesh_node.world_transform)
-
-    for &surface in mesh_node.mesh.surfaces {
-        def := Render_Object {
-            index_count = surface.count,
-            first_index = surface.start_index,
-            index_buffer = mesh_node.mesh.mesh_buffers.index_buffer.buffer,
-            material = &surface.material.data,
-            transform = node_matrix,
-            vertex_buffer_address = mesh_node.mesh.mesh_buffers.vertex_buffer_address,
-        }
-        append(&ctx.opaque_surfaces, def)
-    }
-    node_draw(self, top_matrix, ctx)
-
-
-}
 engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool) {
-
     frame := engine_get_current_frame(self)
 
     color_attachment := attachment_info(self.draw_image.image_view, nil, .COLOR_ATTACHMENT_OPTIMAL)
@@ -135,12 +60,13 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
 
 
     for &draw in self.main_draw_context.opaque_surfaces {
+        material := &self.scene.materials[draw.material]
 
-        vk.CmdBindPipeline(cmd, .GRAPHICS, draw.material.pipeline.pipeline)
+        vk.CmdBindPipeline(cmd, .GRAPHICS, material.pipeline.pipeline)
         vk.CmdBindDescriptorSets(
             cmd,
             .GRAPHICS,
-            draw.material.pipeline.layout,
+            material.pipeline.layout,
             0,
             1,
             &global_descriptor,
@@ -150,10 +76,10 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
         vk.CmdBindDescriptorSets(
             cmd,
             .GRAPHICS,
-            draw.material.pipeline.layout,
+            material.pipeline.layout,
             1,
             1,
-            &draw.material.material_set,
+            &material.material_set,
             0,
             nil,
         )
@@ -167,7 +93,7 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
 
         vk.CmdPushConstants(
             cmd, 
-            draw.material.pipeline.layout, 
+            material.pipeline.layout, 
             {.VERTEX}, 
             0, 
             size_of(GPU_Draw_Push_Constants), 
@@ -338,4 +264,75 @@ engine_ui_definition :: proc(self: ^Engine) {
     im.Render()
 }
 
+// Initialize a new scene.
+scene_init :: proc(scene: ^Scene, allocator := context.allocator) {
+    context.allocator = allocator
+    scene.local_transforms = make([dynamic]la.Matrix4f32)
+    scene.world_transforms = make([dynamic]la.Matrix4f32)
+    scene.hierarchy = make([dynamic]Hierarchy)
+    scene.mesh_for_node = make([dynamic]u32)
+    scene.material_for_node = make([dynamic]u32)
+    scene.name_for_node = make([dynamic]u32)
+    scene.node_names = make([dynamic]string)
+    scene.materials = make([dynamic]Material_Instance)
+    scene.meshes = make([dynamic]Mesh_Asset)
+}
 
+// Free scene resources.
+scene_destroy :: proc(scene: ^Scene, allocator := context.allocator) {
+    context.allocator = allocator
+    delete(scene.local_transforms)
+    delete(scene.world_transforms)
+    delete(scene.hierarchy)
+    delete(scene.mesh_for_node)
+    delete(scene.material_for_node)
+    delete(scene.name_for_node)
+    delete(scene.node_names)
+    delete(scene.materials)
+    delete(scene.meshes)
+}
+
+scene_add_node :: proc(scene: ^Scene, #any_int parent, level: i32) -> i32 {
+
+    node := i32(len(scene.hierarchy))
+    
+    append(&scene.local_transforms, la.MATRIX4F32_IDENTITY)
+    append(&scene.world_transforms, la.MATRIX4F32_IDENTITY)
+    
+    append(&scene.name_for_node, NO_NAME)
+    append(&scene.mesh_for_node, NO_MESH)
+    append(&scene.material_for_node, NO_MATERIAL)
+
+    new_hierarchy := Hierarchy {
+        parent = parent,
+        first_child = -1,
+        next_sibling = -1,
+        last_sibling = -1,
+        level = level,
+    }
+    append(&scene.hierarchy, new_hierarchy)
+
+    if parent > -1 {
+        first_child := scene.hierarchy[parent].first_child
+
+        if first_child == -1 {
+            scene.hierarchy[parent].first_child = node
+            scene.hierarchy[parent].last_sibling = node
+        } else {
+
+            last_sibling := scene.hierarchy[first_child].last_sibling
+            if last_sibling > -1 {
+                scene.hierarchy[last_sibling].next_sibling = node
+            } else {
+                dest := first_child
+                for scene.hierarchy[dest].next_sibling != -1 {
+                    dest = scene.hierarchy[dest].next_sibling
+                }
+                scene.hierarchy[dest].next_sibling = node
+            }
+            scene.hierarchy[first_child].last_sibling = node
+        }
+    }
+
+    return node
+}

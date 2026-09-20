@@ -137,3 +137,15 @@ create_buffer :: proc(self: ^Engine, alloc_size: vk.DeviceSize, usage: vk.Buffer
 destroy_buffer :: proc(self: Allocated_Buffer) {
     vma.DestroyBuffer(self.allocator, self.buffer, self.allocation)
 }
+
+append_and_get_idx :: #force_inline proc(array: ^$T/[dynamic]$E, arg: E) -> u32 {
+    append(array, arg)
+    return u32(len(array) - 1)
+}
+
+append_and_get_ref :: #force_inline proc(array: ^$T/[dynamic]$E, arg: E) -> ^E {
+    append(array, arg)
+    return &array[len(array) - 1]
+}
+
+

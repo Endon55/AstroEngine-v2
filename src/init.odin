@@ -5,6 +5,7 @@ import "base:runtime"
 
 import "vendor:glfw"
 import vk "vendor:vulkan"
+import la "core:math/linalg"
 import im "libs:imgui"
 import im_glfw "libs:imgui/backends/glfw"
 import im_vk "libs:imgui/backends/vulkan"
@@ -526,12 +527,13 @@ engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
 }
 
 engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
-
-    self.test_meshes = load_gltf_meshes(self, "build/assets/basicmesh.glb") or_return
+    
+    scene_init(&self.scene)
+    load_gltf_meshes(self, "build/assets/basicmesh.glb", &self.scene.meshes) or_return
     defer if !ok {
-        destroy_mesh_assets(&self.test_meshes)
+        destroy_mesh_assets(&self.scene.meshes)
     }
-
+   
     white := pack_unorm_4x8({1,1,1,1})
     self.white_image = create_image_from_data(self, &white, {1,1,1}, .R8G8B8A8_UNORM, {.SAMPLED}) or_return
     deletion_queue_push(&self.main_deletion_queue, self.white_image)
@@ -600,21 +602,50 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
         &material_resources,
         &self.global_descriptor_allocator
     ) or_return
-   
+    
+    default_material_idx := append_and_get_idx(
+        &self.scene.materials, self.default_material_data,
+    )
 
-    for &m in self.test_meshes {
-        new_node := new(Mesh_Node)
-        mesh_node_init(new_node)
-        new_node.mesh = m
+    for m, i in self.scene.meshes {
 
-        for &surface in new_node.mesh.surfaces {
-            material: Material
-            material.data = self.default_material_data
-            surface.material = material
+        if m.name == "Sphere" {
+            continue
         }
-        self.loaded_nodes[m.name] = cast(^Node)new_node
+        
+        node_idx := scene_add_mesh_node(&self.scene, -1, i, default_material_idx, m.name)
+        self.name_for_node[m.name] = u32(node_idx)
     }
 
+    // Find and update Suzanne node
+    if suzanne_node, suzanne_ok := self.name_for_node["Suzanne"]; suzanne_ok {
+        self.scene.local_transforms[suzanne_node] = la.MATRIX4F32_IDENTITY
+    }
+
+    // Find and update Cube nodes (create a line of cubes)
+    if cube_node, cube_ok := self.name_for_node["Cube"]; cube_ok {
+        for x := -3; x < 3; x += 1 {
+            scale := la.matrix4_scale(la.Vector3f32{0.2, 0.2, 0.2})
+            translation := la.matrix4_translate(la.Vector3f32{f32(x), 1, 0})
+            transform := la.matrix_mul(translation, scale)
+
+            // For simplicity, assume one node per cube
+            if x == -3 {
+                // Use the original cube node for x = -3
+                self.scene.local_transforms[cube_node] = transform
+            } else {
+                // Add new nodes for additional cubes
+                new_cube_idx := scene_add_mesh_node(
+                    scene = &self.scene,
+                    parent = cube_node,
+                    mesh_index = cube_node,
+                    material_index = cube_node,
+                    name = "Cube",
+                )
+                self.scene.local_transforms[u32(new_cube_idx)] = transform
+            }
+        }
+    }
     return true
 }
 
@@ -733,13 +764,14 @@ engine_cleanup :: proc(self: ^Engine) {
 
     ensure(vk.DeviceWaitIdle(self.vk_device) == .SUCCESS)
 
-
-    delete(self.main_draw_context.opaque_surfaces)
-    for _, &node in self.loaded_nodes {
-        free(node)
+    for &mesh in self.scene.meshes {
+        destroy_buffer(mesh.mesh_buffers.index_buffer)
+        destroy_buffer(mesh.mesh_buffers.vertex_buffer)
     }
-    delete(self.loaded_nodes)
-
+    destroy_mesh_assets(&self.scene.meshes)
+    scene_destroy(&self.scene)
+    delete(self.main_draw_context.opaque_surfaces)
+    delete(self.name_for_node)
 
     for &frame in self.frames {
         vk.DestroyCommandPool(self.vk_device, frame.command_pool, nil)
@@ -750,12 +782,6 @@ engine_cleanup :: proc(self: ^Engine) {
         deletion_queue_destroy(&frame.deletion_queue)
     }
     
-    for &mesh in self.test_meshes {
-        destroy_buffer(mesh.mesh_buffers.index_buffer)
-        destroy_buffer(mesh.mesh_buffers.vertex_buffer)
-    }
-    destroy_mesh_assets(&self.test_meshes)
-
     deletion_queue_destroy(&self.main_deletion_queue)
     engine_destroy_swapchain(self)
 
