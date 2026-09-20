@@ -87,20 +87,10 @@ Engine::struct {
 
     default_material_data: Material_Instance,
     metal_rough_material: Metallic_Roughness,
-}
 
-Render_Object :: struct {
-    index_count: u32,
-    first_index: u32,
-    index_buffer: vk.Buffer,
-    material: ^Material_Instance,
-    transform: la.Matrix4f32,
-    vertex_buffer_address: vk.DeviceAddress,
+    main_draw_context: Draw_Context,
+    loaded_nodes: map[string]^Node,
 }
-// Renderable :: struct {
-//     draw: proc(self: ^Renderable, top_matrix: la.Matrix4x4f32, ctx: ^Draw_Context),
-// }
-//
 Frame_Data :: struct {
     command_pool: vk.CommandPool,
     main_command_buffer : vk.CommandBuffer,
@@ -144,6 +134,35 @@ g_logger: log.Logger
 engine_get_current_frame :: #force_inline proc(self: ^Engine) -> ^Frame_Data #no_bounds_check {
     return &self.frames[self.frame_number % FRAME_OVERLAP]
 }
+
+engine_update_scene :: proc(self: ^Engine) {
+    clear(&self.main_draw_context.opaque_surfaces)
+
+    if suzanne, ok := self.loaded_nodes["Suzanne"]; ok {
+        suzanne.draw(suzanne, la.MATRIX4F32_IDENTITY, &self.main_draw_context)
+    }
+    aspect := f32(self.window_extent.width) / f32(self.window_extent.height)
+    self.scene_data.view = la.matrix4_translate_f32({0, 0, -5})
+    self.scene_data.proj = matrix4_perspective_reverse_z_f32(
+        f32(la.to_radians(70.0)),
+        aspect,
+        0.1,
+        true,
+    )
+    self.scene_data.viewproj = la.matrix_mul(self.scene_data.proj, self.scene_data.view)
+    self.scene_data.ambient_color = {0.1, 0.1, 0.1, 0.1}
+    self.scene_data.sunlight_color = {1.0, 1.0, 1.0, 1.0}
+    self.scene_data.sunlight_direction = {0, 1, 0.5, 1.0}
+
+    if cube, ok := self.loaded_nodes["Cube"]; ok {
+        for x := -3; x < 3; x += 1 {
+            scale := la.matrix4_scale(la.Vector3f32{0.2, 0.2, 0.2})
+            translation := la.matrix4_translate(la.Vector3f32{f32(x), 1, 0})
+            cube.draw(cube, translation * scale, &self.main_draw_context)
+        }
+    }
+}
+
 @(require_results)
 engine_run :: proc(self: ^Engine) -> (ok: bool) {
     monitor_info := get_primary_monitor_info()

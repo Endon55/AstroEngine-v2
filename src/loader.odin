@@ -6,11 +6,13 @@ import "core:strings"
 
 import "vendor:cgltf"
 
-
+Material :: struct {
+    data: Material_Instance,
+}
 Geo_Surface :: struct {
     start_index: u32,
     count: u32,
-
+    material: Material,
 }
 
 Mesh_Asset :: struct {

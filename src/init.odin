@@ -600,7 +600,20 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
         &material_resources,
         &self.global_descriptor_allocator
     ) or_return
-    
+   
+
+    for &m in self.test_meshes {
+        new_node := new(Mesh_Node)
+        mesh_node_init(new_node)
+        new_node.mesh = m
+
+        for &surface in new_node.mesh.surfaces {
+            material: Material
+            material.data = self.default_material_data
+            surface.material = material
+        }
+        self.loaded_nodes[m.name] = cast(^Node)new_node
+    }
 
     return true
 }
@@ -719,6 +732,14 @@ engine_cleanup :: proc(self: ^Engine) {
     }
 
     ensure(vk.DeviceWaitIdle(self.vk_device) == .SUCCESS)
+
+
+    delete(self.main_draw_context.opaque_surfaces)
+    for _, &node in self.loaded_nodes {
+        free(node)
+    }
+    delete(self.loaded_nodes)
+
 
     for &frame in self.frames {
         vk.DestroyCommandPool(self.vk_device, frame.command_pool, nil)
