@@ -677,6 +677,89 @@ engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) {
     return true
 }
 
+
+setup_imgui_style :: proc() {
+    style := im.GetStyle()
+    colors := &style.Colors
+
+    // Base colors for a pleasant and modern dark theme with dark accents
+    colors[im.Col.Text]                  = {0.92, 0.93, 0.94, 1.00}  // Light grey text for readability
+    colors[im.Col.TextDisabled]          = {0.50, 0.52, 0.54, 1.00}  // Subtle grey for disabled text
+    colors[im.Col.WindowBg]              = {0.14, 0.14, 0.16, 1.00}  // Dark background with a hint of blue
+    colors[im.Col.ChildBg]               = {0.16, 0.16, 0.18, 1.00}  // Slightly lighter for child elements
+    colors[im.Col.PopupBg]               = {0.18, 0.18, 0.20, 1.00}  // Popup background
+    colors[im.Col.Border]                = {0.28, 0.29, 0.30, 0.60}  // Soft border color
+    colors[im.Col.BorderShadow]          = {0.00, 0.00, 0.00, 0.00}  // No border shadow
+    colors[im.Col.FrameBg]               = {0.20, 0.22, 0.24, 1.00}  // Frame background
+    colors[im.Col.FrameBgHovered]        = {0.22, 0.24, 0.26, 1.00}  // Frame hover effect
+    colors[im.Col.FrameBgActive]         = {0.24, 0.26, 0.28, 1.00}  // Active frame background
+    colors[im.Col.TitleBg]               = {0.14, 0.14, 0.16, 1.00}  // Title background
+    colors[im.Col.TitleBgActive]         = {0.16, 0.16, 0.18, 1.00}  // Active title background
+    colors[im.Col.TitleBgCollapsed]      = {0.14, 0.14, 0.16, 1.00}  // Collapsed title background
+    colors[im.Col.MenuBarBg]             = {0.20, 0.20, 0.22, 1.00}  // Menu bar background
+    colors[im.Col.ScrollbarBg]           = {0.16, 0.16, 0.18, 1.00}  // Scrollbar background
+    colors[im.Col.ScrollbarGrab]         = {0.24, 0.26, 0.28, 1.00}  // Dark accent for scrollbar grab
+    colors[im.Col.ScrollbarGrabHovered]  = {0.28, 0.30, 0.32, 1.00}  // Scrollbar grab hover
+    colors[im.Col.ScrollbarGrabActive]   = {0.32, 0.34, 0.36, 1.00}  // Scrollbar grab active
+    colors[im.Col.CheckMark]             = {0.46, 0.56, 0.66, 1.00}  // Dark blue checkmark
+    colors[im.Col.SliderGrab]            = {0.36, 0.46, 0.56, 1.00}  // Dark blue slider grab
+    colors[im.Col.SliderGrabActive]      = {0.40, 0.50, 0.60, 1.00}  // Active slider grab
+    colors[im.Col.Button]                = {0.24, 0.34, 0.44, 1.00}  // Dark blue button
+    colors[im.Col.ButtonHovered]         = {0.28, 0.38, 0.48, 1.00}  // Button hover effect
+    colors[im.Col.ButtonActive]          = {0.32, 0.42, 0.52, 1.00}  // Active button
+    colors[im.Col.Header]                = {0.24, 0.34, 0.44, 1.00}  // Header color similar to button
+    colors[im.Col.HeaderHovered]         = {0.28, 0.38, 0.48, 1.00}  // Header hover effect
+    colors[im.Col.HeaderActive]          = {0.32, 0.42, 0.52, 1.00}  // Active header
+    colors[im.Col.Separator]             = {0.28, 0.29, 0.30, 1.00}  // Separator color
+    colors[im.Col.SeparatorHovered]      = {0.46, 0.56, 0.66, 1.00}  // Hover effect for separator
+    colors[im.Col.SeparatorActive]       = {0.46, 0.56, 0.66, 1.00}  // Active separator
+    colors[im.Col.ResizeGrip]            = {0.36, 0.46, 0.56, 1.00}  // Resize grip
+    colors[im.Col.ResizeGripHovered]     = {0.40, 0.50, 0.60, 1.00}  // Hover effect for resize grip
+    colors[im.Col.ResizeGripActive]      = {0.44, 0.54, 0.64, 1.00}  // Active resize grip
+    colors[im.Col.Tab]                   = {0.20, 0.22, 0.24, 1.00}  // Inactive tab
+    colors[im.Col.TabHovered]            = {0.28, 0.38, 0.48, 1.00}  // Hover effect for tab
+    colors[im.Col.TabSelected]           = {0.24, 0.34, 0.44, 1.00}  // Active tab color (TabActive)
+    colors[im.Col.TabDimmed]             = {0.20, 0.22, 0.24, 1.00}  // Unfocused tab (TabUnfocused)
+    colors[im.Col.TabDimmedSelected]     = {0.24, 0.34, 0.44, 1.00}  // Active but unfocused tab (TabUnfocusedActive)
+    colors[im.Col.DockingPreview]        = {0.24, 0.34, 0.44, 0.70}  // Docking preview
+    colors[im.Col.DockingEmptyBg]        = {0.14, 0.14, 0.16, 1.00}  // Empty docking background
+    colors[im.Col.PlotLines]             = {0.46, 0.56, 0.66, 1.00}  // Plot lines
+    colors[im.Col.PlotLinesHovered]      = {0.46, 0.56, 0.66, 1.00}  // Hover effect for plot lines
+    colors[im.Col.PlotHistogram]         = {0.36, 0.46, 0.56, 1.00}  // Histogram color
+    colors[im.Col.PlotHistogramHovered]  = {0.40, 0.50, 0.60, 1.00}  // Hover effect for histogram
+    colors[im.Col.TableHeaderBg]         = {0.20, 0.22, 0.24, 1.00}  // Table header background
+    colors[im.Col.TableBorderStrong]     = {0.28, 0.29, 0.30, 1.00}  // Strong border for tables
+    colors[im.Col.TableBorderLight]      = {0.24, 0.25, 0.26, 1.00}  // Light border for tables
+    colors[im.Col.TableRowBg]            = {0.20, 0.22, 0.24, 1.00}  // Table row background
+    colors[im.Col.TableRowBgAlt]         = {0.22, 0.24, 0.26, 1.00}  // Alternate row background
+    colors[im.Col.TextSelectedBg]        = {0.24, 0.34, 0.44, 0.35}  // Selected text background
+    colors[im.Col.DragDropTarget]        = {0.46, 0.56, 0.66, 0.90}  // Drag and drop target
+    colors[im.Col.NavCursor]             = {0.46, 0.56, 0.66, 1.00}  // Navigation highlight (NavHighlight)
+    colors[im.Col.NavWindowingHighlight] = {1.00, 1.00, 1.00, 0.70}  // Windowing highlight
+    colors[im.Col.NavWindowingDimBg]     = {0.80, 0.80, 0.80, 0.20}  // Dim background for windowing
+    colors[im.Col.ModalWindowDimBg]      = {0.80, 0.80, 0.80, 0.35}  // Dim background for modal windows
+
+    // Style adjustments
+    style.WindowRounding    = 8.0  // Softer rounded corners for windows
+    style.FrameRounding     = 4.0  // Rounded corners for frames
+    style.ScrollbarRounding = 6.0  // Rounded corners for scrollbars
+    style.GrabRounding      = 4.0  // Rounded corners for grab elements
+    style.ChildRounding     = 4.0  // Rounded corners for child windows
+
+    style.WindowTitleAlign  = {0.50, 0.50}  // Centered window title
+    style.WindowPadding     = {10.0, 10.0}  // Comfortable padding
+    style.FramePadding      = {6.0, 4.0}    // Frame padding
+    style.ItemSpacing       = {8.0, 8.0}    // Item spacing
+    style.ItemInnerSpacing  = {8.0, 6.0}    // Inner item spacing
+    style.IndentSpacing     = 22.0          // Indentation spacing
+
+    style.ScrollbarSize     = 16.0  // Scrollbar size
+    style.GrabMinSize       = 10.0  // Minimum grab size
+
+    style.AntiAliasedLines  = true  // Enable anti-aliased lines
+    style.AntiAliasedFill   = true  // Enable anti-aliased fill
+}
+
 engine_init_imgui :: proc(self: ^Engine) -> (ok: bool) {
     im.CHECKVERSION()
 
@@ -752,6 +835,8 @@ engine_init_imgui :: proc(self: ^Engine) -> (ok: bool) {
     deletion_queue_push(&self.main_deletion_queue, imgui_pool)
     deletion_queue_push(&self.main_deletion_queue, im_vk_shutdown)
     deletion_queue_push(&self.main_deletion_queue, im_glfw_shutdown)
+
+    setup_imgui_style()
 
     return true
 }

@@ -221,49 +221,6 @@ engine_draw ::proc(self: ^Engine) -> (ok: bool){
 
     return true
 }
-
-engine_ui_definition :: proc(self: ^Engine) {
-
-    im_glfw.NewFrame()
-    im_vk.NewFrame()
-    im.NewFrame()
-
-    if im.Begin("Background", nil, {.AlwaysAutoResize}) {
-        im.SliderFloat("Render Scale", &self.render_scale, 0.3, 1.0)
-        selected := &self.background_effects[self.current_background_effect]
-
-        im.Text("Selected effect : %s", selected.name)
-
-        @(static) current_background_effect: i32
-        current_background_effect = i32(self.current_background_effect)
-
-        // If the combo is opened and an item is selected, update the current effect
-        if im.BeginCombo("Effect", selected.name) {
-            for effect, i in self.background_effects {
-                is_selected := i32(i) == current_background_effect
-                if im.Selectable(effect.name, is_selected) {
-                    current_background_effect = i32(i)
-                    self.current_background_effect = Compute_Effect_Kind(
-                        current_background_effect,
-                    )
-                }
-
-                // Set initial focus when the currently selected item becomes visible
-                if is_selected {
-                    im.SetItemDefaultFocus()
-                }
-            }
-            im.EndCombo()
-        }
-        im.InputFloat4("data1", &selected.data.data1)
-        im.InputFloat4("data2", &selected.data.data2)
-        im.InputFloat4("data3", &selected.data.data3)
-        im.InputFloat4("data4", &selected.data.data4)
-    }
-    im.End() 
-    im.Render()
-}
-
 // Initialize a new scene.
 scene_init :: proc(scene: ^Scene, allocator := context.allocator) {
     context.allocator = allocator

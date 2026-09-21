@@ -10,6 +10,9 @@ import vk "vendor:vulkan"
 
 import "libs:vkb"
 import vma "libs:vma"
+import im "libs:imgui"
+import im_glfw "libs:imgui/backends/glfw"
+import im_vk "libs:imgui/backends/vulkan"
 
 TITLE :: "Astro Engine v2"
 DEFAULT_WINDOW_EXTENT :: vk.Extent2D{1280, 678}
@@ -189,5 +192,106 @@ engine_run :: proc(self: ^Engine) -> (ok: bool) {
 
     log.info("Exiting...")
     return true
+}
+
+engine_ui_definition :: proc(self: ^Engine) {
+    // ImGUi new frame
+    im_glfw.NewFrame()
+    im_vk.NewFrame()
+    im.NewFrame()
+
+    v := im.GetMainViewport()
+    im.SetNextWindowPos({10, 10})
+    im.SetNextWindowSize({250, v.WorkSize.y - 20})
+    im.Begin("Hierarchy", nil, {.NoFocusOnAppearing, .NoCollapse, .NoResize})
+    @(static) selected_node: i32 = -1
+    for &hierarchy, i in self.scene.hierarchy {
+        if hierarchy.parent == -1 {
+            render_scene_tree_ui(&self.scene, i, &selected_node)
+        }
+    }
+    im.End()
+
+    if im.Begin("Background", nil, {.AlwaysAutoResize}) {
+        im.SliderFloat("Render scale", &self.render_scale, 0.3, 1.0)
+
+        selected := &self.background_effects[self.current_background_effect]
+
+        im.Text("Selected effect: %s", selected.name)
+
+        @(static) current_background_effect: i32
+        current_background_effect = i32(self.current_background_effect)
+
+        // If the combo is opened and an item is selected, update the current effect
+        if im.BeginCombo("Effect", selected.name) {
+            for effect, i in self.background_effects {
+                is_selected := i32(i) == current_background_effect
+                if im.Selectable(effect.name, is_selected) {
+                    current_background_effect = i32(i)
+                    self.current_background_effect = Compute_Effect_Kind(
+                        current_background_effect,
+                    )
+                }
+
+                // Set initial focus when the currently selected item becomes visible
+                if is_selected {
+                    im.SetItemDefaultFocus()
+                }
+            }
+            im.EndCombo()
+        }
+
+        im.InputFloat4("data1", &selected.data.data1)
+        im.InputFloat4("data2", &selected.data.data2)
+        im.InputFloat4("data3", &selected.data.data3)
+        im.InputFloat4("data4", &selected.data.data4)
+
+    }
+    im.End()
+
+    im.Render()
+}
+
+
+render_scene_tree_ui :: proc(scene: ^Scene, #any_int node: i32, selected_node: ^i32) -> i32 {
+    name := scene_get_node_name(scene, node)
+    label := len(name) == 0 ? "NO NODE" : name
+    is_leaf := scene.hierarchy[node].first_child < 0
+    flags: im.TreeNodeFlags = is_leaf ? {.Leaf, .Bullet} : {}
+
+    if node == selected_node^ {
+        flags += {.Selected}
+    }
+
+    // Make the node span the entire width
+    flags += {.SpanFullWidth, .FramePadding}
+
+    is_opened := im.TreeNodeExPtr(
+        &scene.hierarchy[node], flags, "%s", cstring(raw_data(label)))
+
+    // Check for clicks in the entire row area
+    was_clicked := im.IsItemClicked()
+
+    im.PushIDInt(node)
+    {
+        if was_clicked {
+            log.debugf("Selected node: %d (%s)", node, label)
+            selected_node^ = node
+        }
+
+        if is_opened {
+            for ch := scene.hierarchy[node].first_child;
+                ch != -1;
+                ch = scene.hierarchy[ch].next_sibling {
+                if sub_node := render_scene_tree_ui(scene, ch, selected_node); sub_node > -1 {
+                    selected_node^ = sub_node
+                }
+            }
+            im.TreePop()
+        }
+    }
+    im.PopID()
+
+    return selected_node^
 }
 
