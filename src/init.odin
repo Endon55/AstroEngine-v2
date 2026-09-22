@@ -646,6 +646,16 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
             }
         }
     }
+
+    generate_plane(self, &self.scene.meshes, 5, 5, 1.0) or_return
+    plane_idx := scene_add_mesh_node(
+                   &self.scene,
+                   parent = -1,
+                   mesh_index = len(self.scene.meshes) - 1,
+                   material_index = default_material_idx,
+                   name = "Plane"
+               )
+
     return true
 }
 

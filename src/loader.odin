@@ -1,10 +1,10 @@
 package astro
 
 import "base:runtime"
-import "core:log"
 import "core:strings"
 
 import "vendor:cgltf"
+import "core:log"
 
 Material :: struct {
     data: Material_Instance,
@@ -80,7 +80,6 @@ load_gltf_meshes :: proc(engine: ^Engine, file_path: string, meshes: ^Mesh_Asset
 
             // Track starting vertex count for index offsetting
             initial_vtx := len(vertices_temp)
-
             // Load index data
             {
                 index_accessor := prim.indices
