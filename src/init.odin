@@ -53,11 +53,14 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
     engine_init_pipelines(self) or_return
     log.debugf("Initializing ImGui")
     engine_init_imgui(self) or_return
-    log.debugf("Initializing Vulkan")
+    log.debugf("Initializing Input")
+    input_init(&self.input, self.window)
+    log.debugf("Initializing Scene")
     engine_init_default_data(self) or_return
     self.is_initialized = true
 
     return true
+
 
 }
 
@@ -529,6 +532,9 @@ engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
 engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
     
     scene_init(&self.scene)
+
+    camera_init(&self.scene.camera, .Orthographic)
+
     load_gltf_meshes(self, "build/assets/basicmesh.glb", &self.scene.meshes) or_return
     defer if !ok {
         destroy_mesh_assets(&self.scene.meshes)

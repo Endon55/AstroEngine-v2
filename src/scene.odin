@@ -29,6 +29,8 @@ Hierarchy :: struct {
 }
 
 Scene :: struct {
+    camera: Camera,
+
     local_transforms: [dynamic] la.Matrix4f32,
     world_transforms: [dynamic] la.Matrix4f32,
     

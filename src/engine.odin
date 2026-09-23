@@ -53,9 +53,10 @@ Engine::struct {
     graphics_queue: vk.Queue,
     graphics_queue_family: u32,
 
-
     vma_allocator: vma.Allocator,
     main_deletion_queue: Deletion_Queue,
+
+    input: Input,
 
     draw_image: Allocated_Image,
     depth_image: Allocated_Image,
@@ -75,7 +76,6 @@ Engine::struct {
     imm_fence: vk.Fence,
     imm_command_buffer: vk.CommandBuffer,
     imm_command_pool: vk.CommandPool,
-
 
     white_image: Allocated_Image,
     black_image: Allocated_Image,
@@ -135,64 +135,6 @@ Compute_Effect :: struct {
 
 @(private)
 g_logger: log.Logger
-//The modulous here isn't that expensive since FRAME_OVERLAP is a power of 2
-engine_get_current_frame :: #force_inline proc(self: ^Engine) -> ^Frame_Data #no_bounds_check {
-    return &self.frames[self.frame_number % FRAME_OVERLAP]
-}
-
-engine_update_scene :: proc(self: ^Engine) {
-    clear(&self.main_draw_context.opaque_surfaces)
-
-    for &hierarchy, i in self.scene.hierarchy {
-        if hierarchy.parent == -1 {
-            scene_draw_node(&self.scene, i, &self.main_draw_context)
-        }
-    }
-    aspect := f32(self.window_extent.width) / f32(self.window_extent.height)
-
-    self.scene_data.view = la.matrix4_translate_f32({0, 0, -5})
-    self.scene_data.proj = matrix4_perspective_reverse_z_f32(
-        f32(la.to_radians(70.0)),
-        aspect,
-        0.1,
-        true,
-    )
-    self.scene_data.viewproj = la.matrix_mul(self.scene_data.proj, self.scene_data.view)
-    self.scene_data.ambient_color = {0.1, 0.1, 0.1, 0.1}
-    self.scene_data.sunlight_color = {1.0, 1.0, 1.0, 1.0}
-    self.scene_data.sunlight_direction = {0, 1, 0.5, 1.0}
-}
-
-@(require_results)
-engine_run :: proc(self: ^Engine) -> (ok: bool) {
-    monitor_info := get_primary_monitor_info()
-    t: Timer
-    timer_init(&t, monitor_info.refresh_rate)
-
-    log.info("Entering main loop...")
-    for !glfw.WindowShouldClose(self.window) {
-        glfw.PollEvents()
-
-        if self.stop_rendering {
-            glfw.WaitEvents()
-            timer_init(&t, monitor_info.refresh_rate)
-            continue
-        }
-
-        timer_tick(&t)
-        engine_ui_definition(self)
-        engine_draw(self) or_return
-
-        when ODIN_DEBUG {
-            if timer_check_fps_updated(t) {
-                window_update_title_with_fps(self.window, TITLE, timer_get_fps(t))
-            }
-        }
-    }
-
-    log.info("Exiting...")
-    return true
-}
 
 engine_ui_definition :: proc(self: ^Engine) {
     // ImGUi new frame
@@ -205,6 +147,7 @@ engine_ui_definition :: proc(self: ^Engine) {
     im.SetNextWindowSize({250, v.WorkSize.y - 20})
     im.Begin("Hierarchy", nil, {.NoFocusOnAppearing, .NoCollapse, .NoResize})
     @(static) selected_node: i32 = -1
+    im.Text("Camera - %f, %f, %f", self.scene.camera.position.x, self.scene.camera.position.y, self.scene.camera.position.z)
     for &hierarchy, i in self.scene.hierarchy {
         if hierarchy.parent == -1 {
             render_scene_tree_ui(&self.scene, i, &selected_node)
@@ -252,7 +195,6 @@ engine_ui_definition :: proc(self: ^Engine) {
     im.Render()
 }
 
-
 render_scene_tree_ui :: proc(scene: ^Scene, #any_int node: i32, selected_node: ^i32) -> i32 {
     name := scene_get_node_name(scene, node)
     label := len(name) == 0 ? "NO NODE" : name
@@ -295,3 +237,104 @@ render_scene_tree_ui :: proc(scene: ^Scene, #any_int node: i32, selected_node: ^
     return selected_node^
 }
 
+//The modulous here isn't that expensive since FRAME_OVERLAP is a power of 2
+engine_get_current_frame :: #force_inline proc(self: ^Engine) -> ^Frame_Data #no_bounds_check {
+    return &self.frames[self.frame_number % FRAME_OVERLAP]
+}
+
+engine_update_scene :: proc(self: ^Engine) {
+    clear(&self.main_draw_context.opaque_surfaces)
+
+    for &hierarchy, i in self.scene.hierarchy {
+        if hierarchy.parent == -1 {
+            scene_draw_node(&self.scene, i, &self.main_draw_context)
+        }
+    }
+    aspect := f32(self.window_extent.width) / f32(self.window_extent.height)
+
+    // self.scene_data.view = la.matrix4_translate_f32({0, 0, -5})
+    camera_update_transform(&self.scene.camera)
+    self.scene_data.view = self.scene.camera.view
+    self.scene_data.proj = matrix4_perspective_reverse_z_f32(
+        f32(la.to_radians(70.0)),
+        aspect,
+        0.1,
+        true,
+    )
+    self.scene_data.viewproj = la.matrix_mul(self.scene_data.proj, self.scene_data.view)
+    self.scene_data.ambient_color = {0.1, 0.1, 0.1, 0.1}
+    self.scene_data.sunlight_color = {1.0, 1.0, 1.0, 1.0}
+    self.scene_data.sunlight_direction = {0, 1, 0.5, 1.0}
+}
+
+@(require_results)
+engine_run :: proc(self: ^Engine) -> (ok: bool) {
+    monitor_info := get_primary_monitor_info()
+    t: Timer
+    timer_init(&t, monitor_info.refresh_rate)
+
+    log.info("Entering main loop...")
+    for !glfw.WindowShouldClose(self.window) {
+        glfw.PollEvents()
+        input_update(&self.input)
+
+        if self.stop_rendering {
+            glfw.WaitEvents()
+            timer_init(&t, monitor_info.refresh_rate)
+            continue
+        }
+        speed :f32 = 1.0 * f32(t.delta_time)
+        if glfw.GetKey(self.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS {
+            speed = speed * 2
+        }
+        //Rotate Camera
+        if glfw.GetKey(self.window, glfw.KEY_Q) == glfw.PRESS {
+            camera_add_rotation(&self.scene.camera, {0,speed, 0}) 
+        }
+        if glfw.GetKey(self.window, glfw.KEY_E) == glfw.PRESS {
+            camera_add_rotation(&self.scene.camera, {0,-speed, 0}) 
+        }
+        //Move Cardinally
+        if glfw.GetKey(self.window, glfw.KEY_W) == glfw.PRESS {
+            camera_move_forward(&self.scene.camera, speed) 
+        }
+        if glfw.GetKey(self.window, glfw.KEY_S) == glfw.PRESS {
+            camera_move_backward(&self.scene.camera, speed) 
+        }
+        if glfw.GetKey(self.window, glfw.KEY_A) == glfw.PRESS {
+            camera_move_left(&self.scene.camera, speed) 
+        }
+        if glfw.GetKey(self.window, glfw.KEY_D) == glfw.PRESS {
+            camera_move_right(&self.scene.camera, speed) 
+        }
+        if glfw.GetKey(self.window, glfw.KEY_SPACE) == glfw.PRESS {
+            camera_move_up(&self.scene.camera, speed) 
+        }
+        if glfw.GetKey(self.window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS {
+            camera_move_down(&self.scene.camera, speed) 
+        }
+        if glfw.GetKey(self.window, glfw.KEY_R) == glfw.PRESS {
+            self.scene.camera.position = {0,0,0}
+        }
+
+        if glfw.GetMouseButton(self.window, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS{
+
+            log.info("Holding right") 
+
+            camera_add_rotation(&self.scene.camera, {-self.input.mouse_delta.y,  -self.input.mouse_delta.x, 0} * speed) 
+        }
+
+        timer_tick(&t)
+        engine_ui_definition(self)
+        engine_draw(self) or_return
+
+        when ODIN_DEBUG {
+            if timer_check_fps_updated(t) {
+                window_update_title_with_fps(self.window, TITLE, timer_get_fps(t))
+            }
+        }
+    }
+
+    log.info("Exiting...")
+    return true
+}
