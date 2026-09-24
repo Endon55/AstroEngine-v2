@@ -20,8 +20,6 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
     vk.CmdBeginRendering(cmd, &render_info)
 
 
-    vk.CmdBindPipeline(cmd, .GRAPHICS, self.mesh_pipeline)
-
     viewport := vk.Viewport {
         x = 0,
         y = 0,

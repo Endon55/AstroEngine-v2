@@ -425,105 +425,19 @@ engine_init_descriptors:: proc(self: ^Engine) -> (ok:bool) {
     return true
 }
 
-engine_init_mesh_pipeline :: proc(self: ^Engine) -> (ok: bool) {
+engine_init_ocean_material :: proc(self: ^Engine) -> (ok: bool) {
+    layout_builder: Descriptor_Layout_Builder
+    descriptor_layout_builder_init(&layout_builder, self.vk_device)
+    descriptor_layout_builder_add_binding(&layout_builder, 0, .COMBINED_IMAGE_SAMPLER)
+    material_layout := descriptor_layout_builder_build(&layout_builder, {.FRAGMENT}) or_return
 
-    mesh_frag_shader := create_shader_module(self.vk_device, #load("./../shaders/compiled/tex_image.frag.spv")) or_return
-    defer vk.DestroyShaderModule(self.vk_device, mesh_frag_shader, nil)
-
-    mesh_vertex_shader := create_shader_module(self.vk_device, #load("./../shaders/compiled/colored_triangle_mesh.vert.spv")) or_return
-    defer vk.DestroyShaderModule(self.vk_device, mesh_vertex_shader, nil)
-    
-    buffer_range := vk.PushConstantRange {
-        offset = 0,
-        size = size_of(GPU_Draw_Push_Constants),
-        stageFlags = {.VERTEX},
+    config := Material_Shader_Config {
+        vertex_shader = #load("./../shaders/compiled/sin_ocean.vert.spv"),
+        fragment_shader = #load("./../shaders/compiled/tex_image.frag.spv"),
+        material_layout = material_layout,
     }
-
-    pipeline_layout_info := pipeline_layout_create_info()
-    pipeline_layout_info.pPushConstantRanges = &buffer_range
-    pipeline_layout_info.pushConstantRangeCount = 1
-    pipeline_layout_info.pSetLayouts = &self.single_image_descriptor_layout
-    pipeline_layout_info.setLayoutCount = 1
-    vk_check(vk.CreatePipelineLayout(self.vk_device, &pipeline_layout_info, nil, &self.mesh_pipeline_layout,)) or_return
-
-    deletion_queue_push(&self.main_deletion_queue, self.mesh_pipeline_layout)
-
-    
-    builder := pipeline_builder_create_default()
-
-    builder.pipeline_layout = self.mesh_pipeline_layout
-
-    pipeline_builder_set_shaders(&builder, mesh_vertex_shader, mesh_frag_shader)
-    
-    pipeline_builder_set_input_topology(&builder, .TRIANGLE_LIST)
-
-    pipeline_builder_set_polygon_mode(&builder, .FILL)
-
-    pipeline_builder_set_cull_mode(&builder, vk.CullModeFlags_NONE, .CLOCKWISE)
-
-    pipeline_builder_set_multisampling_none(&builder)
-
-    // pipeline_builder_enable_blending_additive(&builder)
-    pipeline_builder_disable_blending(&builder)
-    pipeline_builder_enable_depth_test(&builder, true, .GREATER_OR_EQUAL)
-
-    pipeline_builder_set_color_attachment_format(&builder, self.draw_image.image_format)
-    pipeline_builder_set_depth_attachment_format(&builder, self.depth_image.image_format)
-
-    self.mesh_pipeline = pipeline_builder_build(&builder, self.vk_device) or_return
-    deletion_queue_push(&self.main_deletion_queue, self.mesh_pipeline)
-
-    return true
-}
-
-
-engine_init_ocean_pipeline :: proc(self: ^Engine) -> (ok: bool) {
-
-    mesh_frag_shader := create_shader_module(self.vk_device, #load("./../shaders/compiled/tex_image.frag.spv")) or_return
-    defer vk.DestroyShaderModule(self.vk_device, mesh_frag_shader, nil)
-
-    mesh_vertex_shader := create_shader_module(self.vk_device, #load("./../shaders/compiled/sin_ocean.vert.spv")) or_return
-    defer vk.DestroyShaderModule(self.vk_device, mesh_vertex_shader, nil)
-    
-    buffer_range := vk.PushConstantRange {
-        offset = 0,
-        size = size_of(GPU_Draw_Push_Constants),
-        stageFlags = {.VERTEX},
-    }
-
-    pipeline_layout_info := pipeline_layout_create_info()
-    pipeline_layout_info.pPushConstantRanges = &buffer_range
-    pipeline_layout_info.pushConstantRangeCount = 1
-    pipeline_layout_info.pSetLayouts = &self.single_image_descriptor_layout
-    pipeline_layout_info.setLayoutCount = 1
-    vk_check(vk.CreatePipelineLayout(self.vk_device, &pipeline_layout_info, nil, &self.ocean_pipeline_layout,)) or_return
-
-    deletion_queue_push(&self.main_deletion_queue, self.ocean_pipeline_layout)
-
-    
-    builder := pipeline_builder_create_default()
-
-    builder.pipeline_layout = self.ocean_pipeline_layout
-
-    pipeline_builder_set_shaders(&builder, mesh_vertex_shader, mesh_frag_shader)
-    
-    pipeline_builder_set_input_topology(&builder, .TRIANGLE_LIST)
-
-    pipeline_builder_set_polygon_mode(&builder, .FILL)
-
-    pipeline_builder_set_cull_mode(&builder, vk.CullModeFlags_NONE, .CLOCKWISE)
-
-    pipeline_builder_set_multisampling_none(&builder)
-
-    // pipeline_builder_enable_blending_additive(&builder)
-    pipeline_builder_disable_blending(&builder)
-    pipeline_builder_enable_depth_test(&builder, true, .GREATER_OR_EQUAL)
-
-    pipeline_builder_set_color_attachment_format(&builder, self.draw_image.image_format)
-    pipeline_builder_set_depth_attachment_format(&builder, self.depth_image.image_format)
-
-    self.ocean_pipeline = pipeline_builder_build(&builder, self.vk_device) or_return
-    deletion_queue_push(&self.main_deletion_queue, self.ocean_pipeline)
+    material_shader_build(&self.ocean_material, self, config) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.ocean_material)
 
     return true
 }
@@ -599,13 +513,11 @@ engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) {
     vk_check(vk.CreatePipelineLayout(self.vk_device, &compute_layout, nil, & self.gradient_pipeline_layout), "Failed to create pipeline layout") or_return
     log.debugf("---Background Pipelines")
     engine_init_background_pipelines(self) or_return
-    log.debugf("---Mesh Pipelines")
-    engine_init_mesh_pipeline(self) or_return
-    log.debugf("---Ocean Pipelines")
-    engine_init_ocean_pipeline(self) or_return
     log.debugf("---Metalic Pipelines")
     metallic_roughness_build_pipeline(&self.metal_rough_material, self) or_return
     deletion_queue_push(&self.main_deletion_queue, self.metal_rough_material)
+    log.debugf("---Ocean Material")
+    engine_init_ocean_material(self) or_return
 
 
     return true

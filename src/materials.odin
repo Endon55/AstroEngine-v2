@@ -15,6 +15,20 @@ Material_Pipeline :: struct {
     layout: vk.PipelineLayout,
 }
 
+Material_Shader :: struct {
+    device: vk.Device,
+    material_layout: vk.DescriptorSetLayout,
+    layout: vk.PipelineLayout,
+    opaque_pipeline: Material_Pipeline,
+    transparent_pipeline: Material_Pipeline,
+}
+
+Material_Shader_Config :: struct {
+    vertex_shader: []byte,
+    fragment_shader: []byte,
+    material_layout: vk.DescriptorSetLayout,
+}
+
 Material_Instance :: struct {
     pipeline: ^Material_Pipeline,
     material_set: vk.DescriptorSet,
@@ -37,10 +51,7 @@ Metallic_Roughness_Resources :: struct {
 }
 
 Metallic_Roughness :: struct {
-    device: vk.Device,
-    opaque_pipeline: Material_Pipeline,
-    transparent_pipeline: Material_Pipeline,
-    material_layout: vk.DescriptorSetLayout,
+    shader: Material_Shader,
     constants: Metallic_Roughness_Constants,
     resources: Metallic_Roughness_Resources,
     writer: Descriptor_Writer,
@@ -50,11 +61,30 @@ metallic_roughness_build_pipelines :: proc(self: ^Metallic_Roughness, engine: ^E
     return true
 }
 
-metallic_roughness_clear_resources :: proc(self: Metallic_Roughness) {
+material_shader_clear_resources :: proc(self: Material_Shader) {
     vk.DestroyDescriptorSetLayout(self.device, self.material_layout, nil)
-    vk.DestroyPipelineLayout(self.device, self.transparent_pipeline.layout, nil)
+    vk.DestroyPipelineLayout(self.device, self.layout, nil)
     vk.DestroyPipeline(self.device, self.transparent_pipeline.pipeline, nil)
     vk.DestroyPipeline(self.device, self.opaque_pipeline.pipeline, nil)
+}
+
+metallic_roughness_clear_resources :: proc(self: Metallic_Roughness) {
+    material_shader_clear_resources(self.shader)
+}
+
+material_shader_write :: proc(
+    self: ^Material_Shader,
+    device: vk.Device,
+    pass: Material_Pass,
+    descriptor_allocator: ^Descriptor_Allocator,
+) -> (material: Material_Instance, ok: bool) {
+    material.pass_type = pass
+    material.pipeline = pass == .Transparent ? &self.transparent_pipeline : &self.opaque_pipeline
+    material.material_set = descriptor_allocator_allocate(
+        descriptor_allocator, device, &self.material_layout,
+    ) or_return
+
+    return material, true
 }
 
 metallic_roughness_write :: proc(
@@ -67,16 +97,9 @@ metallic_roughness_write :: proc(
     material: Material_Instance,
     ok: bool,
     ) {
-        material.pass_type = pass
-
-        if pass == .Transparent {
-            material.pipeline = &self.transparent_pipeline
-        } else {
-            material.pipeline = &self.opaque_pipeline
-        }
-
-        material.material_set = descriptor_allocator_allocate(
-            descriptor_allocator, device, &self.material_layout,) or_return
+        material = material_shader_write(
+            &self.shader, device, pass, descriptor_allocator,
+        ) or_return
         
         descriptor_writer_init(&self.writer, device)
         descriptor_writer_clear(&self.writer)
@@ -84,7 +107,7 @@ metallic_roughness_write :: proc(
             &self.writer,
             0,
             resources.data_buffer,
-            size_of(Metallic_Roughness_Resources),
+            size_of(Metallic_Roughness_Constants),
             vk.DeviceSize(resources.data_buffer_ffset),
             .UNIFORM_BUFFER,
         ) or_return
@@ -114,26 +137,36 @@ metallic_roughness_build_pipeline :: proc(
     self: ^Metallic_Roughness,
     engine: ^Engine,
 ) -> (ok: bool,) {
-
-    mesh_frag_shader := create_shader_module(engine.vk_device, 
-        #load("./../shaders/compiled/mesh.frag.spv")) or_return
-    defer vk.DestroyShaderModule(engine.vk_device, mesh_frag_shader, nil)
-
-    mesh_vert_shader := create_shader_module(engine.vk_device, 
-        #load("./../shaders/compiled/mesh.vert.spv")) or_return
-
-    defer vk.DestroyShaderModule(engine.vk_device, mesh_vert_shader, nil)
-
-    self.device = engine.vk_device
-
     layout_builder: Descriptor_Layout_Builder
     descriptor_layout_builder_init(&layout_builder, engine.vk_device)
     descriptor_layout_builder_add_binding(&layout_builder, 0, .UNIFORM_BUFFER)
     descriptor_layout_builder_add_binding(&layout_builder, 1, .COMBINED_IMAGE_SAMPLER)
     descriptor_layout_builder_add_binding(&layout_builder, 2, .COMBINED_IMAGE_SAMPLER)
-    
-    self.material_layout = descriptor_layout_builder_build(&layout_builder, {.VERTEX, .FRAGMENT}) or_return
+    material_layout := descriptor_layout_builder_build(&layout_builder, {.VERTEX, .FRAGMENT}) or_return
 
+    config := Material_Shader_Config {
+        vertex_shader = #load("./../shaders/compiled/mesh.vert.spv"),
+        fragment_shader = #load("./../shaders/compiled/mesh.frag.spv"),
+        material_layout = material_layout,
+    }
+    material_shader_build(&self.shader, engine, config) or_return
+
+    return true
+}
+
+material_shader_build :: proc(
+    self: ^Material_Shader,
+    engine: ^Engine,
+    config: Material_Shader_Config,
+) -> (ok: bool) {
+    vertex_shader := create_shader_module(engine.vk_device, config.vertex_shader) or_return
+    defer vk.DestroyShaderModule(engine.vk_device, vertex_shader, nil)
+
+    fragment_shader := create_shader_module(engine.vk_device, config.fragment_shader) or_return
+    defer vk.DestroyShaderModule(engine.vk_device, fragment_shader, nil)
+
+    self.device = engine.vk_device
+    self.material_layout = config.material_layout
     layouts := [2]vk.DescriptorSetLayout {
         engine.gpu_scene_data_descriptor_layout,
         self.material_layout,
@@ -151,18 +184,14 @@ metallic_roughness_build_pipeline :: proc(
     pipeline_layout_info.pPushConstantRanges = &matrix_range
     pipeline_layout_info.pushConstantRangeCount = 1
 
-    new_layout: vk.PipelineLayout
     vk_check(vk.CreatePipelineLayout(
-            engine.vk_device, &pipeline_layout_info, nil, &new_layout)) or_return
+            engine.vk_device, &pipeline_layout_info, nil, &self.layout)) or_return
     defer if !ok {
-        vk.DestroyPipelineLayout(engine.vk_device, new_layout, nil)
+        vk.DestroyPipelineLayout(engine.vk_device, self.layout, nil)
     }
 
-    self.opaque_pipeline.layout = new_layout
-    self.transparent_pipeline.layout = new_layout
-
     pipeline_builder := pipeline_builder_create_default()
-    pipeline_builder_set_shaders(&pipeline_builder, mesh_vert_shader, mesh_frag_shader)
+    pipeline_builder_set_shaders(&pipeline_builder, vertex_shader, fragment_shader)
     pipeline_builder_set_input_topology(&pipeline_builder, .TRIANGLE_LIST)
     pipeline_builder_set_polygon_mode(&pipeline_builder, .FILL)
     pipeline_builder_set_cull_mode(&pipeline_builder, vk.CullModeFlags_NONE, .CLOCKWISE)
@@ -175,9 +204,12 @@ metallic_roughness_build_pipeline :: proc(
     pipeline_builder_set_depth_attachment_format(
         &pipeline_builder, engine.depth_image.image_format)
 
-    pipeline_builder.pipeline_layout = new_layout
+    pipeline_builder.pipeline_layout = self.layout
 
-    self.opaque_pipeline.pipeline = pipeline_builder_build(&pipeline_builder, engine.vk_device) or_return
+    self.opaque_pipeline = {
+        pipeline = pipeline_builder_build(&pipeline_builder, engine.vk_device) or_return,
+        layout = self.layout,
+    }
     defer if !ok {
         vk.DestroyPipeline(engine.vk_device, self.opaque_pipeline.pipeline, nil)
     }
@@ -185,7 +217,10 @@ metallic_roughness_build_pipeline :: proc(
     pipeline_builder_enable_blending_additive(&pipeline_builder)
     pipeline_builder_enable_depth_test(&pipeline_builder, false, .GREATER_OR_EQUAL)
 
-    self.transparent_pipeline.pipeline = pipeline_builder_build(&pipeline_builder, engine.vk_device) or_return
+    self.transparent_pipeline = {
+        pipeline = pipeline_builder_build(&pipeline_builder, engine.vk_device) or_return,
+        layout = self.layout,
+    }
     defer if !ok {
         vk.DestroyPipeline(engine.vk_device, self.transparent_pipeline.pipeline, nil)
     }

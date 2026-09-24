@@ -93,6 +93,29 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
         &self.scene.materials, self.default_material_data,
     )
 
+    self.ocean_material_data = material_shader_write(
+        &self.ocean_material,
+        self.vk_device,
+        .Main_Color,
+        &self.global_descriptor_allocator,
+    ) or_return
+
+    writer: Descriptor_Writer
+    descriptor_writer_init(&writer, self.vk_device)
+    descriptor_writer_write_image(
+        &writer,
+        binding = 0,
+        image = self.white_image.image_view,
+        sampler = self.default_sampler_linear,
+        layout = .SHADER_READ_ONLY_OPTIMAL,
+        type = .COMBINED_IMAGE_SAMPLER,
+    )
+    descriptor_writer_update_set(&writer, self.ocean_material_data.material_set)
+
+    ocean_material_idx := append_and_get_idx(
+        &self.scene.materials, self.ocean_material_data,
+    )
+
     for m, i in self.scene.meshes {
 
         if m.name == "Sphere" {
@@ -106,6 +129,7 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
     // Find and update Suzanne node
     if suzanne_node, suzanne_ok := self.name_for_node["Suzanne"]; suzanne_ok {
         self.scene.local_transforms[suzanne_node] = la.MATRIX4F32_IDENTITY
+        self.scene.local_transforms[suzanne_node] = la.matrix_mul(self.scene.local_transforms[suzanne_node], la.matrix4_rotate_f32(1.5, {1, 0, 0}))
     }
 
     // Find and update Cube nodes (create a line of cubes)
@@ -138,7 +162,7 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
                    &self.scene,
                    parent = -1,
                    mesh_index = len(self.scene.meshes) - 1,
-                   material_index = default_material_idx,
+                   material_index = ocean_material_idx,
                    name = "Plane"
                )
 

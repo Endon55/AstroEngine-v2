@@ -1,3 +1,5 @@
+#include "inc_input_structures.slang"
+
 struct VSOutput
 {
     float4 pos : SV_Position;
@@ -32,7 +34,9 @@ VSOutput main(uint vertex_index: SV_VertexID)
 
     float4 position = float4(v.position, 1.0);
     VSOutput output;
-    output.pos = mul(push_constants.render_matrix, position);
+    output.pos = position;
+    output.pos.z = sin(output.pos.x + 1);
+    output.pos = mul(scene_data.view_proj, mul(push_constants.render_matrix, output.pos));
 
     output.outColor = v.color.xyz;
     output.outUV.x = v.uv_x;

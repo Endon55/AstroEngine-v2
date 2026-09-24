@@ -73,11 +73,6 @@ Engine::struct {
     gradient_pipeline_layout: vk.PipelineLayout,
     background_effects: [Compute_Effect_Kind]Compute_Effect,
     current_background_effect: Compute_Effect_Kind,
-    mesh_pipeline_layout: vk.PipelineLayout,
-    mesh_pipeline: vk.Pipeline,
-    ocean_pipeline_layout: vk.PipelineLayout,
-    ocean_pipeline: vk.Pipeline,
-
     global_descriptor_allocator: Descriptor_Allocator,
     draw_image_descriptors: vk.DescriptorSet,
     draw_image_descriptor_layout: vk.DescriptorSetLayout,
@@ -96,6 +91,8 @@ Engine::struct {
 
     default_material_data: Material_Instance,
     metal_rough_material: Metallic_Roughness,
+    ocean_material: Material_Shader,
+    ocean_material_data: Material_Instance,
 
     gpu_scene_data_descriptor_layout: vk.DescriptorSetLayout,
 

@@ -38,6 +38,7 @@ Resource :: union {
 
     Descriptor_Allocator_Growable,
     Metallic_Roughness,
+    Material_Shader,
     }
     Deletion_Queue :: struct {
         device: vk.Device,
@@ -115,6 +116,8 @@ Resource :: union {
                 descriptor_growable_destroy_pools(res)
             case Metallic_Roughness:
                 metallic_roughness_clear_resources(res)
+            case Material_Shader:
+                material_shader_clear_resources(res)
             }
        }
 
