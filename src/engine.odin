@@ -93,6 +93,7 @@ Engine::struct {
     metal_rough_material: Metallic_Roughness,
     ocean_material: Material_Shader,
     ocean_material_data: Material_Instance,
+    ocean_data: ^Ocean_Data,
 
     gpu_scene_data_descriptor_layout: vk.DescriptorSetLayout,
 
@@ -283,6 +284,7 @@ engine_run :: proc(self: ^Engine) -> (ok: bool) {
     for !glfw.WindowShouldClose(self.window) {
         glfw.PollEvents()
         input_update(&self.input)
+        self.ocean_data.time += f32(t.delta_time)
 
         if self.stop_rendering {
             glfw.WaitEvents()
@@ -325,9 +327,6 @@ engine_run :: proc(self: ^Engine) -> (ok: bool) {
         }
 
         if glfw.GetMouseButton(self.window, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS{
-
-            log.info("Holding right") 
-
             camera_add_rotation(&self.scene.camera, {-self.input.mouse_delta.y,  -self.input.mouse_delta.x, 0} * speed) 
         }
 

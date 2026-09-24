@@ -17,8 +17,8 @@ generate_plane :: proc (engine: ^Engine, meshes: ^Mesh_Asset_List, size_x, size_
     vertices:= make([]Vertex, x_vertices * y_vertices)
     defer delete(indices)
     defer delete(vertices)
-    x_gap := f32(size_x / x_gaps)
-    y_gap := f32(size_y / y_gaps)
+    x_gap := f32(size_x) / f32(x_gaps)
+    y_gap := f32(size_y) / f32(y_gaps)
 
 
     //create vertices

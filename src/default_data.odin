@@ -92,7 +92,13 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
     default_material_idx := append_and_get_idx(
         &self.scene.materials, self.default_material_data,
     )
-
+    ocean_constants_buffer := create_buffer(
+                            self,
+                            size_of(Ocean_Data),
+                            {.UNIFORM_BUFFER},
+                            .CPU_TO_GPU,) or_return
+    self.ocean_data = cast(^Ocean_Data)ocean_constants_buffer.info.pMappedData
+    deletion_queue_push(&self.main_deletion_queue, ocean_constants_buffer)
     self.ocean_material_data = material_shader_write(
         &self.ocean_material,
         self.vk_device,
@@ -110,7 +116,17 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
         layout = .SHADER_READ_ONLY_OPTIMAL,
         type = .COMBINED_IMAGE_SAMPLER,
     )
+
+    descriptor_writer_write_buffer(
+        &writer,
+        binding = 1,
+        buffer = ocean_constants_buffer.buffer,
+        size = size_of(Ocean_Data),
+        offset = 0,
+        type = .UNIFORM_BUFFER,
+    )    
     descriptor_writer_update_set(&writer, self.ocean_material_data.material_set)
+
 
     ocean_material_idx := append_and_get_idx(
         &self.scene.materials, self.ocean_material_data,
@@ -132,11 +148,15 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
         self.scene.local_transforms[suzanne_node] = la.matrix_mul(self.scene.local_transforms[suzanne_node], la.matrix4_rotate_f32(1.5, {1, 0, 0}))
     }
 
+    plane_size: u32 = 30
+    plane_size2: u32 = plane_size / 2
+
     // Find and update Cube nodes (create a line of cubes)
     if cube_node, cube_ok := self.name_for_node["Cube"]; cube_ok {
-        for x := -3; x < 3; x += 1 {
+        for x := -i32(plane_size2); x < i32(plane_size2); x += 1 {
+            for y := -i32(plane_size2); y < i32(plane_size2); y += 1 {
             scale := la.matrix4_scale(la.Vector3f32{0.2, 0.2, 0.2})
-            translation := la.matrix4_translate(la.Vector3f32{f32(x), 1, 0})
+            translation := la.matrix4_translate(la.Vector3f32{f32(x), f32(y), 0})
             transform := la.matrix_mul(translation, scale)
 
             // For simplicity, assume one node per cube
@@ -155,9 +175,9 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
                 self.scene.local_transforms[u32(new_cube_idx)] = transform
             }
         }
+        }
     }
-
-    generate_plane(self, &self.scene.meshes, 5, 5, 1.0) or_return
+    generate_plane(self, &self.scene.meshes, plane_size, plane_size, 5.0) or_return
     plane_idx := scene_add_mesh_node(
                    &self.scene,
                    parent = -1,
@@ -165,6 +185,11 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
                    material_index = ocean_material_idx,
                    name = "Plane"
                )
+    self.scene.local_transforms[plane_idx] = la.matrix_mul(
+        self.scene.local_transforms[plane_idx], 
+    la.matrix4_translate_f32({-f32(plane_size / 2.0) , -f32(plane_size / 2.0), 0})
+    )
+
 
     return true
 }

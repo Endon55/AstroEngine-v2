@@ -424,24 +424,6 @@ engine_init_descriptors:: proc(self: ^Engine) -> (ok:bool) {
 
     return true
 }
-
-engine_init_ocean_material :: proc(self: ^Engine) -> (ok: bool) {
-    layout_builder: Descriptor_Layout_Builder
-    descriptor_layout_builder_init(&layout_builder, self.vk_device)
-    descriptor_layout_builder_add_binding(&layout_builder, 0, .COMBINED_IMAGE_SAMPLER)
-    material_layout := descriptor_layout_builder_build(&layout_builder, {.FRAGMENT}) or_return
-
-    config := Material_Shader_Config {
-        vertex_shader = #load("./../shaders/compiled/sin_ocean.vert.spv"),
-        fragment_shader = #load("./../shaders/compiled/tex_image.frag.spv"),
-        material_layout = material_layout,
-    }
-    material_shader_build(&self.ocean_material, self, config) or_return
-    deletion_queue_push(&self.main_deletion_queue, self.ocean_material)
-
-    return true
-}
-
 engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
 
     GRADIENT_COLOR_SPV :: #load("./../shaders/compiled/gradient_color.comp.spv")
@@ -517,7 +499,7 @@ engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) {
     metallic_roughness_build_pipeline(&self.metal_rough_material, self) or_return
     deletion_queue_push(&self.main_deletion_queue, self.metal_rough_material)
     log.debugf("---Ocean Material")
-    engine_init_ocean_material(self) or_return
+    ocean_build_pipeline(self) or_return
 
 
     return true

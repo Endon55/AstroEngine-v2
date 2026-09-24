@@ -1,13 +1,10 @@
 #include "inc_scene_data.slang"
-#include "inc_gltf_data.slang"
 
 struct PSInput
 {
     [vk_location(0)]
-    float3 inNormal : NORMAL;
-    [vk_location(1)]
     float3 inColor : COLOR;
-    [vk_location(2)]
+    [vk_location(1)]
     float2 inUV : TEXCOORD0;
 };
 
@@ -22,9 +19,9 @@ PSOutput main(PSInput input)
 {
     PSOutput output;
 
-    float light_value = max(dot(input.inNormal, scene_data.sunlight_direction.xyz), 0.1);
+    float light_value = max(dot(float3(0.0, 1.0, 0.0), scene_data.sunlight_direction.xyz), 0.1);
 
-    float3 color = input.inColor * color_tex.Sample(input.inUV).xyz;
+    float3 color = float3(0.1, 0.1, 1.0);
     float3 ambient = color * scene_data.ambient_color.xyz;
 
     output.out_frag_color =

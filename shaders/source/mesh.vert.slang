@@ -1,4 +1,6 @@
-#include "inc_input_structures.slang"
+#include "inc_scene_data.slang"
+#include "inc_gltf_data.slang"
+
 
 struct VSOutput
 {
@@ -10,7 +12,6 @@ struct VSOutput
     [vk_location(2)]
     float2 outUV : TEXCOORD0;
 };
-
 struct Vertex
 {
     float3 position;

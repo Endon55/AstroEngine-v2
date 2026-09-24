@@ -1,4 +1,15 @@
-#include "inc_input_structures.slang"
+struct SceneData
+{
+    float4x4 view;
+    float4x4 proj;
+    float4x4 view_proj;
+    float4 ambient_color;
+    float4 sunlight_direction; // w for sun power
+    float4 sunlight_color;
+};
+
+[[vk::binding(0, 0)]]
+ParameterBlock<SceneData> scene_data;
 
 struct VSOutput
 {
@@ -17,6 +28,10 @@ struct Vertex
     float uv_y;
     float4 color;
 };
+struct OceanData {
+    float time;
+    float3 _padding;
+};
 
 struct PushConstants
 {
@@ -27,6 +42,9 @@ struct PushConstants
 [vk_push_constant]
 PushConstants push_constants;
 
+[[vk::binding(1, 1)]]
+ConstantBuffer<OceanData> ocean_data;
+
 [shader("vertex")]
 VSOutput main(uint vertex_index: SV_VertexID)
 {
@@ -35,7 +53,7 @@ VSOutput main(uint vertex_index: SV_VertexID)
     float4 position = float4(v.position, 1.0);
     VSOutput output;
     output.pos = position;
-    output.pos.z = sin(output.pos.x + 1);
+    output.pos.z = sin(output.pos.x + ocean_data.time);
     output.pos = mul(scene_data.view_proj, mul(push_constants.render_matrix, output.pos));
 
     output.outColor = v.color.xyz;
