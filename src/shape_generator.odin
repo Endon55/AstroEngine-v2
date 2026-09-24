@@ -26,7 +26,7 @@ generate_plane :: proc (engine: ^Engine, meshes: ^Mesh_Asset_List, size_x, size_
     for y in 0..< y_vertices {
         for x in 0..< x_vertices {
             vertices[index] = {
-                position = {x_gap * f32(x), 1, y_gap * f32(y)},
+                position = {x_gap * f32(x), y_gap * f32(y), 0},
                 normal = {1,0,0},
                 color = {1,1,1,1},
                 uv_x = 0,

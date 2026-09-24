@@ -18,7 +18,14 @@ TITLE :: "Astro Engine v2"
 DEFAULT_WINDOW_EXTENT :: vk.Extent2D{1280, 678}
 
 FRAME_OVERLAP :: 2
-
+/*
+    Engine remaps the coordinate space to something more understandable as a lay-person such as the dumbass coding this.
+    forward(+) backward(-) exist on the y-axis,
+    right(+) left(-) x-axis,
+    up(+) down(-) on the z axis.
+    If we're moving on a flat surface in 3d space then all that changes is the xy coordinates.
+    The final view matrix contains the shift and should have negligible performance penalty.
+*/
 
 Engine::struct {
     window: glfw.WindowHandle,
@@ -68,6 +75,8 @@ Engine::struct {
     current_background_effect: Compute_Effect_Kind,
     mesh_pipeline_layout: vk.PipelineLayout,
     mesh_pipeline: vk.Pipeline,
+    ocean_pipeline_layout: vk.PipelineLayout,
+    ocean_pipeline: vk.Pipeline,
 
     global_descriptor_allocator: Descriptor_Allocator,
     draw_image_descriptors: vk.DescriptorSet,
@@ -310,7 +319,8 @@ engine_run :: proc(self: ^Engine) -> (ok: bool) {
         if glfw.GetKey(self.window, glfw.KEY_SPACE) == glfw.PRESS {
             camera_move_up(&self.scene.camera, speed) 
         }
-        if glfw.GetKey(self.window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS {
+        if glfw.GetKey(self.window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS ||
+            glfw.GetKey(self.window, glfw.KEY_C) == glfw.PRESS{
             camera_move_down(&self.scene.camera, speed) 
         }
         if glfw.GetKey(self.window, glfw.KEY_R) == glfw.PRESS {
