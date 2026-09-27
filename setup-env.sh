@@ -10,17 +10,24 @@
 
 #build glfw as well
 
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Run as root(add 'sudo' before this script name)"
+    exit 1
+fi
+
+
 project_dir=$(pwd)
 src="/usr/local/src"
 bin="/usr/local/bin"
+slang_compiler="libslang.so"
 libs="$project_dir/libs"
 usr=${SUDO_USER:-$(whoami)}
 home="/home/$usr"
 echo $id
 cd /usr/local/
-
+echo "libs $libs"
 mkdir -p src
-
 echo "Setting up environment"
 sudo apt install llvm-20 clang python3-venv python3-pip libwayland-dev libxkbcommon-dev xorg-dev libvulkan-dev vulkan-tools vulkan-validationlayers spirv-tools libvulkan1 mesa-vulkan-drivers
 
@@ -61,6 +68,11 @@ if grep -Fxq "export PATH=\"$src/vulkan/$vulkan_sdk_version/x86_64/bin:\$PATH\""
     echo "export PATH=\"$src/vulkan/$vulkan_sdk_version/x86_64/bin:\$PATH\"" >> $home/.bashrc
 fi
 
+if [ ! -e $libs/$slang_compiler ]; then
+    echo "Adding symbolic link of slang to libs directory"
+    ln -s "$src/vulkan/$vulkan_sdk_version/x86_64/lib/$slang_compiler" $libs 
+fi
+
 
 cd $src
 if [ ! -e "$src/premake" ]; then
@@ -69,13 +81,13 @@ if [ ! -e "$src/premake" ]; then
 fi
 
 premake_path="/usr/local/src/premake/bin/release"
-if [ ! -e "$src/premake/bin/release/premake5" ]; then
+if [ ! -e $src/premake/bin/release/premake5 ]; then
     echo "Building premake5"
     cd premake
     chmod +x Bootstrap.sh
     ./Bootstrap.sh
 fi
-if [ ! -e "$bin/premake5" ]; then
+if [ ! -e $bin/premake5 ]; then
     echo "Adding premake5 to path"
     ln -s $src/premake/bin/release/premake5 $bin 
 fi
@@ -86,22 +98,24 @@ cd $project_dir/libs
 
 echo "Building project libs"
 
-cd $libs/imgui
-
-if [ ! -e "$libs/imgui/libimgui_*.a" ]; then
+cd "$libs/imgui"
+imgui_files=($libs/imgui/libimgui*.a )
+if [[ ! -e ${imgui_files[0]} ]]; then
     echo "Building ImGui"
-    
+    echo "FAILURE"
+    exit 1 
     premake5 --backends=glfw,vulkan gmake
     cd build/make/linux
     make config=release_x86_64
 fi
 
 
-cd $libs/vma
+cd "$libs/vma"
 
-if [ ! -e "$libs/vma/*.a" ]; then
+vma_files=($libs/vma/libvma*.a )
+if [[ ! -e ${vma_files[0]} ]]; then
     echo "Building VMA"
-    
+
     premake5 --vk-version=3 gmake
     cd build/make/linux
     make config=release_x86_64
@@ -113,7 +127,7 @@ cd $libs/glfw
 
 mkdir -p build
 
-if [ ! -e "$libs/glfw/build/src/libglfw3.a" ]; then
+if [[ ! -e $libs/glfw/build/src/libglfw3.a ]]; then
     echo "Building GLFW"
     cmake -S . -B build
     cd build
@@ -123,7 +137,7 @@ fi
 
 cd $src/odin/vendor/glfw/lib
 
-if [ ! -e "$src/odin/vendor/glfw/lib/libglfw3.a" ]; then
+if [[ ! -e $src/odin/vendor/glfw/lib/libglfw3.a ]]; then
     echo "Adding custom GLFW binary to odin"
     
     ln -s $libs/glfw/build/src/libglfw3.a .
@@ -132,12 +146,13 @@ fi
 cd $src/odin/vendor/cgltf/src
 
 
-if [ ! -e "$src/odin/vendor/cgltf/lib/cgltf.a" ]; then
+if [[ ! -e $src/odin/vendor/cgltf/lib/cgltf.a ]]; then
     echo "Building GLTF binary for odin"
     
     ./build_cgltf.sh
 fi
 
-exec bash
+su -u "$SUDO_USER"
+cd $project_dir
 
 exit

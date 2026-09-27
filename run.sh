@@ -2,7 +2,10 @@
 
 clear
 
-odin_args="--collection:libs=libs -debug -define:GLFW_SHARED=false -keep-executable"
+VULKAN=(/usr/local/src/vulkan/*)
+VULKAN_SDK="${VULKAN[0]}/$(uname -m)"
+echo $VULKAN_SDK
+odin_args="--collection:libs=libs -debug -define:GLFW_SHARED=false -keep-executable -extra-linker-flags:\"-L$VULKAN_SDK/lib -Wl,-rpath,$VULKAN_SDK/lib\""
 odin_command="run"
 prefix=""
 

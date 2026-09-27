@@ -3,6 +3,33 @@ package astro
  import "core:strings"
  import "core:log"
 
+generate_cross :: proc (engine: ^ Engine, meshes: ^Mesh_Asset_List) -> (ok: bool) {
+
+    //12 vertices per side
+    vertices:= make([]Vertex, 24) 
+    //6 triangles per side(12), then 24 triangles for the entire edge
+    //offset
+    o: f32 = 0.5
+    //
+    // for i in 0..<len(vertices) {
+    //     vertices[i] = {
+    //         position = {x_gap * f32(x), y_gap * f32(y), 0},
+    //         normal = {0,0,0},
+    //         color = {1,1,1,1},
+    //         uv_x = 0,
+    //         uv_y = 0,
+    //         }
+    // } 
+    //
+    indices: [36 * 3]u32 = 
+    {
+        
+    }
+
+    
+    return true
+}
+
 
 generate_plane :: proc (engine: ^Engine, meshes: ^Mesh_Asset_List, size_x, size_y: u32, density: f32,) -> (ok: bool){
 
@@ -70,3 +97,5 @@ generate_plane :: proc (engine: ^Engine, meshes: ^Mesh_Asset_List, size_x, size_
    return true 
 
 }
+
+

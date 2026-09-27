@@ -47,6 +47,10 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
     engine_init_commands(self) or_return
     log.debugf("Initializing Sync Structures")
     engine_init_sync_structures(self) or_return
+
+    shader_manager_init(&self.shader_manager) or_return
+
+
     log.debugf("Initializing Descriptors")
     engine_init_descriptors(self) or_return
     log.debugf("Initializing Pipelines")
@@ -677,6 +681,7 @@ engine_cleanup :: proc(self: ^Engine) {
 
     ensure(vk.DeviceWaitIdle(self.vk_device) == .SUCCESS)
 
+    shader_manager_deinit(&self.shader_manager)
     for &mesh in self.scene.meshes {
         destroy_buffer(mesh.mesh_buffers.index_buffer)
         destroy_buffer(mesh.mesh_buffers.vertex_buffer)

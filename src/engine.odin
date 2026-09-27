@@ -64,6 +64,7 @@ Engine::struct {
     main_deletion_queue: Deletion_Queue,
 
     input: Input,
+    shader_manager: Shader_Manager,
 
     draw_image: Allocated_Image,
     depth_image: Allocated_Image,
@@ -335,6 +336,7 @@ engine_run :: proc(self: ^Engine) -> (ok: bool) {
         engine_draw(self) or_return
 
         when ODIN_DEBUG {
+
             if timer_check_fps_updated(t) {
                 window_update_title_with_fps(self.window, TITLE, timer_get_fps(t))
             }
