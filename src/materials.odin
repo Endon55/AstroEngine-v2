@@ -146,10 +146,23 @@ metallic_roughness_build_pipeline :: proc(
     descriptor_layout_builder_add_binding(&layout_builder, 1, .COMBINED_IMAGE_SAMPLER)
     descriptor_layout_builder_add_binding(&layout_builder, 2, .COMBINED_IMAGE_SAMPLER)
     material_layout := descriptor_layout_builder_build(&layout_builder, {.VERTEX, .FRAGMENT}) or_return
+    //
+    // config := Material_Shader_Config {
+    //     vertex_shader = #load("./../shaders/compiled/mesh.vert.spv"),
+    //     fragment_shader = #load("./../shaders/compiled/mesh.frag.spv"),
+    //     material_layout = material_layout,
+    // }
+    //
+        if "mesh.frag" not_in engine.shader_manager.shaders && "mesh.vert" not_in engine.shader_manager.shaders {
+        return false
+    }
+
+    vertex :Shader = engine.shader_manager.shaders["mesh.vert"]
+    fragment :Shader = engine.shader_manager.shaders["mesh.frag"]
 
     config := Material_Shader_Config {
-        vertex_shader = #load("./../shaders/compiled/mesh.vert.spv"),
-        fragment_shader = #load("./../shaders/compiled/mesh.frag.spv"),
+        vertex_shader = vertex.spirv_bytes, 
+        fragment_shader = fragment.spirv_bytes, 
         material_layout = material_layout,
     }
     material_shader_build(&self.shader, engine, config) or_return
@@ -239,9 +252,16 @@ ocean_build_pipeline :: proc(self: ^Engine) -> (ok: bool) {
     descriptor_layout_builder_add_binding(&layout_builder, 2, .COMBINED_IMAGE_SAMPLER)
     material_layout := descriptor_layout_builder_build(&layout_builder, {.VERTEX, .FRAGMENT}) or_return
 
+    if "ocean.frag" not_in self.shader_manager.shaders && "sin_ocean.vert" not_in self.shader_manager.shaders {
+        return false
+    }
+
+    fragment :Shader = self.shader_manager.shaders["ocean.frag"]
+    vertex :Shader = self.shader_manager.shaders["sin_ocean.vert"]
+
     config := Material_Shader_Config {
-        vertex_shader = #load("./../shaders/compiled/sin_ocean.vert.spv"),
-        fragment_shader = #load("./../shaders/compiled/ocean.frag.spv"),
+        vertex_shader = vertex.spirv_bytes, 
+        fragment_shader = fragment.spirv_bytes, 
         material_layout = material_layout,
     }
     material_shader_build(&self.ocean_material, self, config) or_return

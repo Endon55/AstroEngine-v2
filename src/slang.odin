@@ -264,8 +264,24 @@ module_as_component :: proc(m: ^IModule) -> ^IComponentType {
 // Compiler options / session & target descriptors
 // ---------------------------------------------------------------------------
 
+CompilerOptionName :: distinct c.int32_t
+// Forces row-major matrix layout regardless of session/target defaults, matching `-matrix-layout-row-major`.
+SLANG_COMPILER_OPTION_NAME_MATRIX_LAYOUT_ROW :: CompilerOptionName(9)
+
+CompilerOptionValueKind :: distinct c.int32_t
+SLANG_COMPILER_OPTION_VALUE_KIND_INT :: CompilerOptionValueKind(0)
+
+CompilerOptionValue :: struct {
+    kind:         CompilerOptionValueKind,
+    intValue0:    c.int32_t,
+    intValue1:    c.int32_t,
+    stringValue0: cstring,
+    stringValue1: cstring,
+}
+
 CompilerOptionEntry :: struct {
-    // Opaque: not populated by these bindings; pass nil/0 for the arrays below.
+    name:  CompilerOptionName,
+    value: CompilerOptionValue,
 }
 
 PreprocessorMacroDesc :: struct {
@@ -303,11 +319,11 @@ SessionDesc :: struct {
     skipSPIRVValidation:      bool,
 }
 
-target_desc_default :: proc(format: SlangCompileTarget) -> TargetDesc {
+target_desc_default :: proc(format: SlangCompileTarget, profile := SLANG_PROFILE_UNKNOWN) -> TargetDesc {
     desc := TargetDesc {
         structureSize = size_of(TargetDesc),
         format = format,
-        profile = SLANG_PROFILE_UNKNOWN,
+        profile = profile,
         flags = kDefaultTargetFlags,
         floatingPointMode = SLANG_FLOATING_POINT_MODE_DEFAULT,
         lineDirectiveMode = SLANG_LINE_DIRECTIVE_MODE_DEFAULT,
@@ -320,9 +336,24 @@ session_desc_default :: proc(targets: ^TargetDesc, target_count: int) -> Session
         structureSize = size_of(SessionDesc),
         targets = targets,
         targetCount = SlangInt(target_count),
-        defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR,
+        // Matches compile.sh's implicit default (verified: slangc with no matrix-layout
+        // flag, and with -matrix-layout-column-major, both emit ColMajor-flavored codegen).
+        defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_COLUMN_MAJOR,
     }
     return desc
+}
+
+// Converts `paths` to a temp-allocated cstring array and wires it into `desc` as
+// `#include`/`import` search directories. `desc` must not outlive `allocator`'s scope.
+@(private = "file")
+session_desc_set_search_paths :: proc(desc: ^SessionDesc, paths: []string, allocator: runtime.Allocator) {
+    if len(paths) == 0 do return
+    paths_c := make([]cstring, len(paths), allocator)
+    for path, i in paths {
+        paths_c[i] = strings.clone_to_cstring(path, allocator)
+    }
+    desc.searchPaths = &paths_c[0]
+    desc.searchPathCount = SlangInt(len(paths_c))
 }
 
 // ---------------------------------------------------------------------------
@@ -351,6 +382,8 @@ slang_compiler_deinit :: proc(self: ^Slang_Compiler) {
 
 // Compiles Slang/HLSL/GLSL source held as a string into SPIR-V bytecode.
 // entry_point_name identifies the function to compile, stage is its shader stage.
+// `file_path` (defaults to `module_name`) and `search_paths` let Slang's preprocessor
+// resolve `#include`/`import` directives in `source` on its own.
 // The returned bytes are allocated with `allocator` and owned by the caller.
 slang_compile_to_spirv :: proc(
     self: ^Slang_Compiler,
@@ -358,6 +391,8 @@ slang_compile_to_spirv :: proc(
     module_name: string,
     entry_point_name: string,
     stage: SlangStage,
+    file_path := "",
+    search_paths: []string = nil,
     allocator := context.allocator,
 ) -> (
     spirv: []byte,
@@ -366,8 +401,11 @@ slang_compile_to_spirv :: proc(
     ensure(self.global_session != nil, "Slang_Compiler not initialized")
 
     ta := context.temp_allocator
-    target := target_desc_default(SLANG_SPIRV)
+    // Match compile.sh's `-profile glsl_450` so codegen (matrix majorness, SPIR-V version) matches the CLI reference.
+    profile := self.global_session.vtbl.findProfile(self.global_session, "glsl_450")
+    target := target_desc_default(SLANG_SPIRV, profile)
     session_desc := session_desc_default(&target, 1)
+    session_desc_set_search_paths(&session_desc, search_paths, ta)
 
     session: ^ISession
     {
@@ -380,10 +418,11 @@ slang_compile_to_spirv :: proc(
     defer slang_release(session)
 
     module_name_c := strings.clone_to_cstring(module_name, ta)
+    path_c := strings.clone_to_cstring(file_path if file_path != "" else module_name, ta)
     source_c := strings.clone_to_cstring(source, ta)
 
     diagnostics: ^ISlangBlob
-    module := session.vtbl.loadModuleFromSourceString(session, module_name_c, module_name_c, source_c, &diagnostics)
+    module := session.vtbl.loadModuleFromSourceString(session, module_name_c, path_c, source_c, &diagnostics)
     slang_log_diagnostics(diagnostics)
     if module == nil {
         log.errorf("Failed to load Slang module: %s", module_name)
@@ -519,10 +558,14 @@ slang_link_and_get_code :: proc(
 // Compiles every `[shader(...)]`-tagged entry point found in `source`. If none are tagged,
 // falls back to checking a single `main` function against each common stage in turn
 // (compute, then vertex, then fragment) and compiles whichever one type-checks.
+// `file_path` (defaults to `module_name`) and `search_paths` let Slang's preprocessor
+// resolve `#include`/`import` directives in `source` on its own.
 slang_compile_module :: proc(
     self: ^Slang_Compiler,
     source: string,
     module_name := "shader",
+    file_path := "",
+    search_paths: []string = nil,
     allocator := context.allocator,
 ) -> (
     shaders: []Slang_Compiled_Shader,
@@ -531,8 +574,11 @@ slang_compile_module :: proc(
     ensure(self.global_session != nil, "Slang_Compiler not initialized")
 
     ta := context.temp_allocator
-    target := target_desc_default(SLANG_SPIRV)
+    // Match compile.sh's `-profile glsl_450` so codegen (matrix majorness, SPIR-V version) matches the CLI reference.
+    profile := self.global_session.vtbl.findProfile(self.global_session, "glsl_450")
+    target := target_desc_default(SLANG_SPIRV, profile)
     session_desc := session_desc_default(&target, 1)
+    session_desc_set_search_paths(&session_desc, search_paths, ta)
 
     session: ^ISession
     {
@@ -545,10 +591,11 @@ slang_compile_module :: proc(
     defer slang_release(session)
 
     module_name_c := strings.clone_to_cstring(module_name, ta)
+    path_c := strings.clone_to_cstring(file_path if file_path != "" else module_name, ta)
     source_c := strings.clone_to_cstring(source, ta)
 
     diagnostics: ^ISlangBlob
-    module := session.vtbl.loadModuleFromSourceString(session, module_name_c, module_name_c, source_c, &diagnostics)
+    module := session.vtbl.loadModuleFromSourceString(session, module_name_c, path_c, source_c, &diagnostics)
     slang_log_diagnostics(diagnostics)
     if module == nil {
         log.errorf("Failed to load Slang module: %s", module_name)

@@ -16,7 +16,6 @@ load_file_from_disc :: proc(file_name: string, flags:= os.File_Flags{}) ->(bytes
         log.error("Failed to read file data %v", file_name)
         return nil, false
     }
-
     return data, true
 }
 
@@ -33,6 +32,16 @@ load_directory_contents_from_disc :: proc(dir_name: string) -> (file_infos: []os
     if read_err != os.ERROR_NONE {
         return nil, false
     }
-    
     return infos, true
+}
+
+save_file_to_disc :: proc(fullpath: string, data:[]byte, flags:= os.File_Flags{}) ->(ok:bool,) {
+
+    err := os.write_entire_file(fullpath, data,)
+    if err != nil {
+        log.warnf("Failed to write file: %v, to disc", fullpath)
+        return false
+    } 
+
+    return true
 }

@@ -430,12 +430,20 @@ engine_init_descriptors:: proc(self: ^Engine) -> (ok:bool) {
 }
 engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
 
-    GRADIENT_COLOR_SPV :: #load("./../shaders/compiled/gradient_color.comp.spv")
+    if "gradient_color.comp" not_in self.shader_manager.shaders &&
+       "sky.comp" not_in self.shader_manager.shaders {
+        return false
+    }
+    gradient_comp :Shader = self.shader_manager.shaders["gradient_color.comp"]
+    sky_comp :Shader = self.shader_manager.shaders["sky.comp"]
+
+
+    GRADIENT_COLOR_SPV := gradient_comp.spirv_bytes 
     gradient_color_shader := create_shader_module(self.vk_device, GRADIENT_COLOR_SPV) or_return
     defer vk.DestroyShaderModule(self.vk_device, gradient_color_shader, nil)
 
 
-    SKY_SPV :: #load("./../shaders/compiled/sky.comp.spv")
+    SKY_SPV := sky_comp.spirv_bytes 
     sky_shader := create_shader_module(self.vk_device, SKY_SPV) or_return
     defer vk.DestroyShaderModule(self.vk_device, sky_shader, nil)
 
