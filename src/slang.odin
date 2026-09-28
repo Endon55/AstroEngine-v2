@@ -5,6 +5,8 @@ import "core:c"
 import "core:log"
 import "core:strings"
 
+import vk "vendor:vulkan"
+
 foreign import slang "system:slang"
 
 // ---------------------------------------------------------------------------

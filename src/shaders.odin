@@ -5,14 +5,16 @@ import "core:strings"
 import "core:log"
 import "core:os"
 import "core:path/filepath"
-
+import "base:runtime"
+import "core:time"
 import vk "vendor:vulkan"
 
 Shader::struct {
     name: string,
     compiled_path: string,
     source_path: string,
-    type: SlangStage,
+    stage: vk.ShaderStageFlag,
+    modify_time: time.Time,
     spirv_bytes:[]byte,
 }
 
@@ -64,8 +66,48 @@ shader_manager_init :: proc(self: ^Shader_Manager) -> (ok: bool) {
     return true
 }
 
-shader_manager_is_compiled :: proc(self: ^Shader_Manager, full_path: string) -> (compiled:bool) {
-    return os.exists(full_path) 
+shader_manager_is_out_of_date :: proc(self: ^Shader) ->(ok:bool,) {
+
+    if os.exists(self.compiled_path)
+    {
+        compile_info, err := os.stat(self.compiled_path, context.allocator)
+        if err != os.ERROR_NONE {
+            log.errorf("Failed to read file data from: %v", self.compiled_path)
+            return true
+        }
+
+        defer delete(compile_info.fullpath)
+
+        return self.modify_time != compile_info.modification_time
+    }
+    return true
+}
+
+shader_determine_stage :: proc(filename: string) -> (stage:vk.ShaderStageFlag) {
+ 
+    split_name, err_split := strings.split(filename, ".", context.allocator)
+    defer delete(split_name)
+    if err_split != .None  {
+        return ._MAX
+    }
+    //means that it's not defined in the file path and we assume it's an include file
+    size := len(split_name)  
+    if size < 2 {
+        return ._MAX
+    }
+    else if size == 2 {
+        return .CALLABLE_KHR
+    }
+    switch split_name[1]{
+    case "vert", "vertex": 
+        return .VERTEX
+    case "frag", "fragment":
+        return .FRAGMENT
+    case "comp", "compute":
+        return .COMPUTE
+    }
+    log.warnf("Un-Mapped shader type: %v", split_name[1])
+    return ._MAX 
 }
 
 shader_manager_update_shaders :: proc(self: ^Shader_Manager) -> (ok:bool,) {
@@ -74,63 +116,67 @@ shader_manager_update_shaders :: proc(self: ^Shader_Manager) -> (ok:bool,) {
     defer delete(file_infos) 
     for i in 0..<len(file_infos) {   
         info := file_infos[i]
-        if !strings.ends_with(info.fullpath, ".slang"){
-            delete(info.fullpath)
-            continue
-        }
         if strings.starts_with(info.name, "inc_") {
             delete(info.fullpath)
             continue
         }
 
         spirv: []byte
-        stage: SlangStage
-
+        stage: vk.ShaderStageFlag = shader_determine_stage(info.name)    
+        if stage == ._MAX {
+            log.errorf("Failed to determine shader type for: %v", info.fullpath)
+            return false
+        } 
+        else if stage == .CALLABLE_KHR {
+            delete(info.fullpath)
+            continue
+        }
         filename_stripped := strings.substring(info.name, 0, len(info.name) - len(".slang")) or_return 
-        save_path, err_c := strings.concatenate({self.shader_directory, "/compiled/", filename_stripped, ".spv"}, context.allocator)
+        compile_path, err_c := strings.concatenate({self.shader_directory, "/compiled/", filename_stripped, ".spv"}, context.allocator)
         if err_c != nil {
             log.warnf("Failed to concatenate string")
-        }  
+        } 
 
-        should_save: bool
-        if !shader_manager_is_compiled(self, save_path)
-        {
-            should_save = true
-           spirv, stage = shader_manager_compile_shader(self, info.fullpath) or_return 
-        }
-        else {
-            spirv = load_file_from_disc(save_path,) or_return
-        }
-        log.infof("Filename_Stripped: %v", filename_stripped)
-        self.shaders[filename_stripped] = {
+        shader: Shader = {
             name = filename_stripped,
             source_path = info.fullpath,
-            type = stage,
-            spirv_bytes = spirv, 
-            compiled_path = save_path,
+            modify_time = info.modification_time,
+            compiled_path = compile_path,
+            stage = stage,
         }
-        if should_save {
+
+        out_of_date:= shader_manager_is_out_of_date(&shader)
+        
+        if out_of_date
+        {
+            log.infof("shader(%v) is out of date: recompiling", shader.name)
+            spirv = shader_manager_compile_shader(self, shader.source_path) or_return
+        }
+        else {
+            spirv = load_file_from_disc(shader.compiled_path,) or_return
+        }
+
+        shader.spirv_bytes = spirv
+        shader.stage = stage
+        self.shaders[filename_stripped] = shader
+
+        if out_of_date{
             shader_manager_save_compiled_shader(self, &self.shaders[filename_stripped])or_return
         }
     }   
-    
-    log.infof("Map Info")
-    for key, value in self.shaders {
-        log.infof("k(%v)\n", key)
-    }
-
     return true
 }
 shader_manager_save_compiled_shader :: proc(self: ^Shader_Manager, shader: ^Shader,) -> (ok:bool,){
     ensure(shader != nil, "Invalid Shader")
-    return save_file_to_disc(shader.compiled_path, shader.spirv_bytes) 
+    save_file_to_disc(shader.compiled_path, shader.spirv_bytes) or_return
+    return modify_file_metadata_time(shader.compiled_path, shader.modify_time, time.now())
 }
 
 
-shader_manager_compile_shader :: proc(self: ^Shader_Manager, source_path: string,) -> (spirv: []byte, shader_stage: SlangStage, ok: bool) {
+shader_manager_compile_shader :: proc(self: ^Shader_Manager, source_path: string,) -> (spirv: []byte, ok: bool) {
 
     shader_bytes := load_file_from_disc(source_path,) or_return 
-
+    defer delete(shader_bytes)
     module_name := filepath.stem(source_path)
     shaders: []Slang_Compiled_Shader = slang_compile_module(
         &self.slang_compiler,
@@ -142,8 +188,12 @@ shader_manager_compile_shader :: proc(self: ^Shader_Manager, source_path: string
     if len(shaders) > 1 {
         log.warnf("Uh oh too many shaders in array")
     }  
+    for shader in shaders {
+        delete(shader.name)
+    }
+    delete(shaders)
 
-    return shaders[0].spirv, shaders[0].stage, true
+    return shaders[0].spirv, true
 }
 shader_manager_deinit :: proc(self: ^Shader_Manager) {
     slang_compiler_deinit(&self.slang_compiler)

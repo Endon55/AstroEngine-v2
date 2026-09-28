@@ -2,7 +2,7 @@ package astro
 
 import "core:os"
 import "core:log"
-
+import "core:time"
 
 load_file_from_disc :: proc(file_name: string, flags:= os.File_Flags{}) ->(bytes : []byte, ok:bool,){
     file_handle, err := os.open(file_name, flags) 
@@ -35,10 +35,19 @@ load_directory_contents_from_disc :: proc(dir_name: string) -> (file_infos: []os
     return infos, true
 }
 
+modify_file_metadata_time :: proc(fullpath: string, modification_time, access_time: time.Time) ->(ok:bool,) {
+
+    err := os.change_times(fullpath, access_time, modification_time)
+    if err != os.ERROR_NONE{
+        log.errorf("Failed to update time metadata for file: %v, with Access Time = %v, Modification Time = %v", fullpath, access_time, modification_time)
+        return false
+    }
+    return true
+}
 save_file_to_disc :: proc(fullpath: string, data:[]byte, flags:= os.File_Flags{}) ->(ok:bool,) {
 
     err := os.write_entire_file(fullpath, data,)
-    if err != nil {
+    if err != os.ERROR_NONE{
         log.warnf("Failed to write file: %v, to disc", fullpath)
         return false
     } 

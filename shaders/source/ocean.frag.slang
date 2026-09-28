@@ -27,5 +27,6 @@ PSOutput main(PSInput input)
     output.out_frag_color =
         float4(color * light_value * scene_data.sunlight_color.w + ambient, 1.0);
 
+
     return output;
 }
