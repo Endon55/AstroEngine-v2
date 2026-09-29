@@ -43,6 +43,8 @@ Scene :: struct {
     materials: [dynamic] Material_Instance,
 
     meshes: Mesh_Asset_List,
+    
+    ocean: Ocean,
 }
 
 scene_add_mesh_node :: proc(

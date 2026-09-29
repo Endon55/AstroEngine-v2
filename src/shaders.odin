@@ -116,7 +116,7 @@ shader_manager_update_shaders :: proc(self: ^Shader_Manager) -> (ok:bool,) {
     defer delete(file_infos) 
     for i in 0..<len(file_infos) {   
         info := file_infos[i]
-        if strings.starts_with(info.name, "inc_") {
+        if !strings.ends_with(info.name, ".slang") {
             delete(info.fullpath)
             continue
         }

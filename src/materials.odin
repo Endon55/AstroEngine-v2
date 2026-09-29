@@ -56,10 +56,7 @@ Metallic_Roughness :: struct {
     resources: Metallic_Roughness_Resources,
     writer: Descriptor_Writer,
 }
-Ocean_Data :: struct {
-    time: f32,
-    _padding: [3]f32,
-}
+
 metallic_roughness_build_pipelines :: proc(self: ^Metallic_Roughness, engine: ^Engine) -> (ok: bool,) {
     return true
 }
@@ -243,31 +240,4 @@ material_shader_build :: proc(
 
     return true
 }
-
-ocean_build_pipeline :: proc(self: ^Engine) -> (ok: bool) {
-    layout_builder: Descriptor_Layout_Builder
-    descriptor_layout_builder_init(&layout_builder, self.vk_device)
-    descriptor_layout_builder_add_binding(&layout_builder, 0, .COMBINED_IMAGE_SAMPLER)
-    descriptor_layout_builder_add_binding(&layout_builder, 1, .UNIFORM_BUFFER) 
-    descriptor_layout_builder_add_binding(&layout_builder, 2, .COMBINED_IMAGE_SAMPLER)
-    material_layout := descriptor_layout_builder_build(&layout_builder, {.VERTEX, .FRAGMENT}) or_return
-
-    if "ocean.frag" not_in self.shader_manager.shaders && "sin_ocean.vert" not_in self.shader_manager.shaders {
-        return false
-    }
-
-    fragment :Shader = self.shader_manager.shaders["ocean.frag"]
-    vertex :Shader = self.shader_manager.shaders["sin_ocean.vert"]
-
-    config := Material_Shader_Config {
-        vertex_shader = vertex.spirv_bytes, 
-        fragment_shader = fragment.spirv_bytes, 
-        material_layout = material_layout,
-    }
-    material_shader_build(&self.ocean_material, self, config) or_return
-    deletion_queue_push(&self.main_deletion_queue, self.ocean_material)
-
-    return true
-}
-
 

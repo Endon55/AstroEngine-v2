@@ -8,13 +8,12 @@ import la "core:math/linalg"
 
 import vma "libs:vma"
 
-
 engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
     
     scene_init(&self.scene)
 
-    camera_init(&self.scene.camera, .Orthographic)
-
+    camera_init(&self.scene.camera, .Orthographic, true)
+    ocean_init(&self.scene.ocean)
     load_gltf_meshes(self, "build/assets/basicmesh.glb", &self.scene.meshes) or_return
     defer if !ok {
         destroy_mesh_assets(&self.scene.meshes)
@@ -92,20 +91,6 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
     default_material_idx := append_and_get_idx(
         &self.scene.materials, self.default_material_data,
     )
-    ocean_constants_buffer := create_buffer(
-                            self,
-                            size_of(Ocean_Data),
-                            {.UNIFORM_BUFFER},
-                            .CPU_TO_GPU,) or_return
-    self.ocean_data = cast(^Ocean_Data)ocean_constants_buffer.info.pMappedData
-    deletion_queue_push(&self.main_deletion_queue, ocean_constants_buffer)
-    self.ocean_material_data = material_shader_write(
-        &self.ocean_material,
-        self.vk_device,
-        .Main_Color,
-        &self.global_descriptor_allocator,
-    ) or_return
-
     writer: Descriptor_Writer
     descriptor_writer_init(&writer, self.vk_device)
     descriptor_writer_write_image(
@@ -116,22 +101,6 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
         layout = .SHADER_READ_ONLY_OPTIMAL,
         type = .COMBINED_IMAGE_SAMPLER,
     )
-
-    descriptor_writer_write_buffer(
-        &writer,
-        binding = 1,
-        buffer = ocean_constants_buffer.buffer,
-        size = size_of(Ocean_Data),
-        offset = 0,
-        type = .UNIFORM_BUFFER,
-    )    
-    descriptor_writer_update_set(&writer, self.ocean_material_data.material_set)
-
-
-    ocean_material_idx := append_and_get_idx(
-        &self.scene.materials, self.ocean_material_data,
-    )
-
     for m, i in self.scene.meshes {
 
         if m.name == "Sphere" {
@@ -148,8 +117,9 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
         self.scene.local_transforms[suzanne_node] = la.matrix_mul(self.scene.local_transforms[suzanne_node], la.matrix4_rotate_f32(1.5, {1, 0, 0}))
     }
 
-    plane_size: u32 = 30
-    plane_size2: u32 = plane_size / 2
+    plane_size: u32 = self.scene.ocean.plane_size
+    plane_size2: u32 = self.scene.ocean.plane_size2 
+
 
     // Find and update Cube nodes (create a line of cubes)
     if cube_node, cube_ok := self.name_for_node["Cube"]; cube_ok {
@@ -177,20 +147,20 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
         }
         }
     }
-    generate_plane(self, &self.scene.meshes, plane_size, plane_size, 5.0) or_return
-    plane_idx := scene_add_mesh_node(
+
+    cross_mesh_idx := generate_cross(self, &self.scene.meshes, .01, 100.0, .01) or_return
+    cross_idx := scene_add_mesh_node(
                    &self.scene,
                    parent = -1,
-                   mesh_index = len(self.scene.meshes) - 1,
-                   material_index = ocean_material_idx,
-                   name = "Plane"
-               )
-    self.scene.local_transforms[plane_idx] = la.matrix_mul(
-        self.scene.local_transforms[plane_idx], 
-    la.matrix4_translate_f32({-f32(plane_size / 2.0) , -f32(plane_size / 2.0), 0})
+                   mesh_index = cross_mesh_idx,
+                   material_index = default_material_idx,
+                   name = "Cross"
+               ) 
+    self.scene.local_transforms[cross_idx] = la.matrix_mul(
+        self.scene.local_transforms[cross_idx], 
+    la.matrix4_translate_f32({0,0, 3})
     )
-
-
+    ocean_init_default_data(&self.scene.ocean, self)
     return true
 }
 

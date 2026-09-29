@@ -511,7 +511,7 @@ engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) {
     metallic_roughness_build_pipeline(&self.metal_rough_material, self) or_return
     deletion_queue_push(&self.main_deletion_queue, self.metal_rough_material)
     log.debugf("---Ocean Material")
-    ocean_build_pipeline(self) or_return
+    ocean_build_pipeline(&self.scene.ocean, self) or_return
 
 
     return true
