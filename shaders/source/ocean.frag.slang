@@ -1,11 +1,10 @@
-#include "inc_scene_data.slang"
 
 struct PSInput
 {
     [vk_location(0)]
     float3 inColor : COLOR;
     [vk_location(1)]
-    float2 inUV : TEXCOORD0;
+    float2 uv : TEXCOORD0;
 };
 
 struct PSOutput
@@ -14,19 +13,43 @@ struct PSOutput
     float4 out_frag_color : SV_Target0;
 };
 
+// Uniform buffer for time and animation parameters
+struct UniformData
+{
+    float time;
+};
+
+// Bind the uniform buffer to set 0, binding 0
+[[vk::binding(0, 0)]]
+ConstantBuffer<UniformData> globalData;
+
+// Fragment shader entry point
 [shader("fragment")]
-PSOutput main(PSInput input)
+PSOutput main(PSInput input) : SV_Target
 {
     PSOutput output;
+    float2 uv = input.uv;
+    float time = globalData.time;
 
-    float light_value = max(dot(float3(0.0, 1.0, 0.0), scene_data.sunlight_direction.xyz), 0.1);
+    // First wave direction and speed
+    float2 waveDir1 = float2(0.5, 0.5);
+    float waveSpeed1 = 1.0;
+    float wave1 = sin(dot(uv, waveDir1) * 20.0 + time * waveSpeed1) * 0.5 + 0.5;
 
-    float3 color = float3(0.1, 0.1, 1.0);
-    float3 ambient = color * scene_data.ambient_color.xyz;
+    // Second wave direction and speed (creates interference patterns)
+    float2 waveDir2 = float2(-0.3, 0.7);
+    float waveSpeed2 = 1.5;
+    float wave2 = sin(dot(uv, waveDir2) * 30.0 + time * waveSpeed2) * 0.5 + 0.5;
 
-    output.out_frag_color =
-        float4(color * light_value * scene_data.sunlight_color.w + ambient, 1.0);
+    // Blend the two waves together
+    float finalWave = (wave1 + wave2) * 0.5;
 
+    // Define water colors
+    float4 deepWater = float4(0.0, 0.3, 0.5, 1.0);
+    float4 shallowWater = float4(0.5, 0.7, 0.8, 1.0);
 
-    return output;
+    // Mix colors based on the moving wave value
+    output.out_frag_color = lerp(deepWater, shallowWater, finalWave);
+    return output; 
 }
+

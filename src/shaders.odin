@@ -26,6 +26,7 @@ Shader_Manager::struct {
     status_file: string,
     slang_compiler: Slang_Compiler, 
 }
+
 shader_manager_get_shader_index_by_name :: proc (self:^Shader_Manager, name:string) -> ^Shader{
    return &self.shaders[name] 
 }
@@ -209,3 +210,10 @@ shader_manager_deinit :: proc(self: ^Shader_Manager) {
     }
     delete(self.shaders)
 }
+
+
+
+
+
+
+

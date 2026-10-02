@@ -39,6 +39,8 @@ camera_init :: proc(camera: ^Camera, camera_type: Camera_Type = .Perspective, ax
     camera.pitch_min = la.to_radians(f32(-89))
     camera.pitch_max = la.to_radians(f32(89))
 
+    camera_move_up(camera, 5)
+
 }
 
 // Enables/disables the 2-axis (yaw/pitch) rotation lock. When enabling, the current

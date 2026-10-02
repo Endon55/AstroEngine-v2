@@ -47,13 +47,16 @@ create_image_default :: proc(self: ^Engine, size: vk.Extent3D, format: vk.Format
         aspect_flag = vk.ImageAspectFlags{.DEPTH}
     }
 
-        view_info := imageview_create_info(new_image.image_format, new_image.image, aspect_flag)
+    view_info := imageview_create_info(new_image.image_format, new_image.image, aspect_flag)
 
-        vk_check(vk.CreateImageView(self.vk_device, &view_info, nil, &new_image.image_view)) or_return
+    vk_check(vk.CreateImageView(self.vk_device, &view_info, nil, &new_image.image_view)) or_return
 
-        defer if !ok {
-            vk.DestroyImageView(self.vk_device, new_image.image_view, nil)
-        }
+    defer if !ok {
+        vk.DestroyImageView(self.vk_device, new_image.image_view, nil)
+    }
+
+    
+    deletion_queue_push(&self.main_deletion_queue, new_image)
 
     return new_image, true
 }
@@ -112,6 +115,7 @@ create_image_from_data :: proc(self: ^Engine, data: rawptr, size: vk.Extent3D, f
             transition_image(cmd, data.new_image, .TRANSFER_DST_OPTIMAL, .SHADER_READ_ONLY_OPTIMAL)
         },
     ) or_return
+
 
     return new_image, true
 }

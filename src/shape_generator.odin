@@ -183,12 +183,14 @@ generate_plane :: proc (engine: ^Engine, meshes: ^Mesh_Asset_List, size_x, size_
     index: u32 = 0
     for y in 0..< y_vertices {
         for x in 0..< x_vertices {
+            uv_x := f32(x) / f32(x_vertices)
+            uv_y := f32(y) / f32(y_vertices)
             vertices[index] = {
                 position = {x_gap * f32(x), y_gap * f32(y), 0},
                 normal = {1,0,0},
-                color = {1,1,1,1},
-                uv_x = 0,
-                uv_y = 0,
+                uv_x = uv_x,
+                uv_y = uv_y,
+                color = {(uv_x + uv_y) / 2.0, uv_x,uv_y, 1},
             }
             index += 1
         }

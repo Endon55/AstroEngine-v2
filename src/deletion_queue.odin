@@ -2,9 +2,9 @@ package astro
 
 
 import "core:mem"
-
+import "core:log"
 import vk "vendor:vulkan"
-
+import "base:runtime"
 
 import vma "libs:vma"
 
@@ -15,7 +15,6 @@ Resource :: union {
     Resource_Proc,
 
     vk.Pipeline,
-
     vk.PipelineLayout,
 
     vk.DescriptorPool,
@@ -39,10 +38,16 @@ Resource :: union {
     Descriptor_Allocator_Growable,
     Metallic_Roughness,
     Material_Shader,
+
     }
+    Resource_Loc :: struct {
+        resource: Resource,
+        loc: runtime.Source_Code_Location,
+
+    } 
     Deletion_Queue :: struct {
         device: vk.Device,
-        resources: [dynamic]Resource,
+        resources: [dynamic]Resource_Loc,
         allocator: mem.Allocator,
     }
 
@@ -52,30 +57,33 @@ Resource :: union {
 
         self.allocator = allocator
         self.device = device
-        self.resources = make([dynamic]Resource, self.allocator)
+        self.resources = make([dynamic]Resource_Loc, self.allocator)
     }
 
     deletion_queue_destroy :: proc(self: ^Deletion_Queue) {
         assert(self != nil)
         context.allocator = self.allocator
 
-        deletion_queue_flush(self)
+        deletion_queue_flush(self, false)
 
         delete(self.resources)
     }
 
-    deletion_queue_push :: proc(self: ^Deletion_Queue, resource: Resource) {
-        append(&self.resources, resource)
+    deletion_queue_push :: proc(self: ^Deletion_Queue, resource: Resource, loc:= #caller_location) {
+        append(&self.resources, Resource_Loc{resource, loc})
     }
 
-    deletion_queue_flush :: proc(self: ^Deletion_Queue) {
+    deletion_queue_flush :: proc(self: ^Deletion_Queue, log_lines:bool = false) {
         assert(self != nil)
         if len(self.resources) == 0 {
             return
         }
 
-        #reverse for &resource in self.resources {
-            switch &res in resource {
+        #reverse for &resource_loc in self.resources {
+            if log_lines {
+                log.debugf("Destroying resource from: %v", resource_loc.loc)
+            }
+            switch &res in resource_loc.resource{
             case Resource_Proc:
                 res()
 

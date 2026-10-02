@@ -1,6 +1,8 @@
 src.bin
+Astro.bin
 Astro2.bin
 /.linker_libs
 /.vscode
 /shaders/compiled/
 /build/assets/
+/game

@@ -478,8 +478,10 @@ default_debug_callback :: proc "system" (message_severity: vk.DebugUtilsMessageS
     context.logger = g_logger
     if .WARNING in message_severity {
         log.warnf("[%v]: %s", message_types, p_callback_data.pMessage)
+        print_stack_trace()
     } else if .ERROR in message_severity {
         log.errorf("[%v]: %s", message_types, p_callback_data.pMessage)
+        print_stack_trace()
         runtime.debug_trap()
     } else {
         log.infof("[%v]: %s", message_types, p_callback_data.pMessage)

@@ -2,6 +2,7 @@ package astro
 
 import "core:log"
 import "base:runtime"
+import "core:mem"
 
 import "vendor:glfw"
 import vk "vendor:vulkan"
@@ -14,11 +15,49 @@ import im_vk "libs:imgui/backends/vulkan"
 import "libs:vkb"
 import vma "libs:vma"
 
+engine_start :: proc() ->(ok:bool){
+
+    when ODIN_DEBUG {
+        context.logger = log.create_console_logger(opt = {.Level, .Terminal_Color})
+        defer log.destroy_console_logger(context.logger)
+
+        track: mem.Tracking_Allocator
+        mem.tracking_allocator_init(&track, context.allocator)
+        context.allocator = mem.tracking_allocator(&track)
+
+        defer {
+            if len(track.allocation_map) > 0 {
+                log.errorf("=== %v allocations not freed ===", len(track.allocation_map))
+                for _, entry in track.allocation_map {
+                    log.debugf("%v bytes @ %v", entry.size, entry.location)
+                }
+            }
+            if len(track.bad_free_array) > 0 {
+                log.errorf("=== %v incorrect frees ===", len(track.bad_free_array))
+                for entry in track.bad_free_array {
+                    log.debugf("%p @ %v", entry.memory, entry.location)
+                }
+            }
+            mem.tracking_allocator_destroy(&track)
+        }
+
+    }
+
+    engine := new(Engine)
+    ensure(engine != nil, "Failed to allocate 'Engine' object")
+    defer free(engine)
+
+    engine_init(engine) or_return
+    defer engine_cleanup(engine)
+
+    engine_run(engine) or_return
+
+    return true
+}
 
 @(require_results)
 engine_init :: proc(self: ^Engine) -> (ok: bool) {
     ensure(self != nil, "Invalid 'Engine' object")
-
     g_logger = context.logger
 
     self.window_extent = DEFAULT_WINDOW_EXTENT
@@ -435,17 +474,26 @@ engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
         return false
     }
     gradient_comp :Shader = self.shader_manager.shaders["gradient_color.comp"]
-    sky_comp :Shader = self.shader_manager.shaders["sky.comp"]
 
 
     GRADIENT_COLOR_SPV := gradient_comp.spirv_bytes 
     gradient_color_shader := create_shader_module(self.vk_device, GRADIENT_COLOR_SPV) or_return
     defer vk.DestroyShaderModule(self.vk_device, gradient_color_shader, nil)
 
+    sky_comp :Shader = self.shader_manager.shaders["sky.comp"]
 
     SKY_SPV := sky_comp.spirv_bytes 
     sky_shader := create_shader_module(self.vk_device, SKY_SPV) or_return
     defer vk.DestroyShaderModule(self.vk_device, sky_shader, nil)
+
+    if "generate_jonswap.comp" not_in self.shader_manager.shaders {       return false
+    }
+    buffer_comp :Shader = self.shader_manager.shaders["generate_jonswap.comp"]
+
+    BUFFER_SPV := buffer_comp.spirv_bytes 
+    buffer_shader:= create_shader_module(self.vk_device, BUFFER_SPV) or_return
+    defer vk.DestroyShaderModule(self.vk_device, buffer_shader, nil)
+
 
     stage_info := vk.PipelineShaderStageCreateInfo {
         sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -478,13 +526,27 @@ engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
     
     vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &compute_pipeline_create_info, nil, &sky.pipeline),) or_return
 
+    compute_pipeline_create_info.stage.module = buffer_shader
+
+    buffer := Compute_Effect {
+        layout = self.gradient_pipeline_layout,
+        name = "Buffer",
+        data = {data1 = {8.0, 100.0, 3.3, 1.0}, data3 = {250.0, 0, 0, 0}},
+    }
+    
+    vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &compute_pipeline_create_info, nil, &buffer.pipeline),) or_return
+
+
     self.background_effects[.Gradient] = gradient_color
     self.background_effects[.Sky] = sky
-
+    self.background_effects[.Buffer] = buffer
 
     deletion_queue_push(&self.main_deletion_queue, self.gradient_pipeline_layout)
     deletion_queue_push(&self.main_deletion_queue, gradient_color.pipeline)
     deletion_queue_push(&self.main_deletion_queue, sky.pipeline)
+    deletion_queue_push(&self.main_deletion_queue, buffer.pipeline)
+
+    self.current_background_effect = DEFAULT_BACKGROUND    
 
     return true
 }
@@ -509,9 +571,8 @@ engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) {
     engine_init_background_pipelines(self) or_return
     log.debugf("---Metalic Pipelines")
     metallic_roughness_build_pipeline(&self.metal_rough_material, self) or_return
-    deletion_queue_push(&self.main_deletion_queue, self.metal_rough_material)
     log.debugf("---Ocean Material")
-    ocean_build_pipeline(&self.scene.ocean, self) or_return
+    // ocean_build_pipeline(&self.scene.ocean, self) or_return
 
 
     return true

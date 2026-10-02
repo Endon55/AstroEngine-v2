@@ -3,6 +3,7 @@ package astro
 import "base:builtin"
 import la "core:math/linalg"
 import vk "vendor:vulkan"
+
 NO_MESH :: max(u32)
 NO_MATERIAL :: max(u32)
 NO_NAME :: max(u32)
@@ -28,6 +29,13 @@ Hierarchy :: struct {
     level: i32 // Depth in hierarchy, root = 0
 }
 
+INIT_FUNC   :: #type proc(node_index: u32, scene: ^Scene, engine: ^Engine)->(ok:bool)
+DRAW_FUNC   :: #type proc(node_index: u32, scene: ^Scene, engine: ^Engine)->(ok:bool)
+DEINIT_FUNC :: #type proc(node_index: u32, scene: ^Scene, engine: ^Engine)->(ok:bool)
+
+SCENE_INIT_FUNC :: #type proc(self: ^Scene, engine: ^Engine) ->(ok:bool)
+SCENE_DRAW_FUNC :: #type proc(self: ^Scene, engine: ^Engine, cmd: vk.CommandBuffer) ->(ok:bool)
+
 Scene :: struct {
     camera: Camera,
 
@@ -35,23 +43,54 @@ Scene :: struct {
     world_transforms: [dynamic] la.Matrix4f32,
     
     hierarchy: [dynamic] Hierarchy,
+
     mesh_for_node: [dynamic] u32,
     material_for_node: [dynamic] u32,
     name_for_node: [dynamic] u32,
     node_names: [dynamic] string,
     
+    init_func_for_node: [dynamic] INIT_FUNC,
+    draw_func_for_node: [dynamic] DRAW_FUNC,
+    deinit_func_for_node: [dynamic] DEINIT_FUNC,
+
     materials: [dynamic] Material_Instance,
 
     meshes: Mesh_Asset_List,
-    
-    ocean: Ocean,
+    init_func_scene: SCENE_INIT_FUNC,
+    draw_func_scene: SCENE_DRAW_FUNC,
+    deinit_func_scene: SCENE_INIT_FUNC,
+    // ocean: Ocean,
 }
+
+scene_init :: proc(scene: ^Scene, init_func: SCENE_INIT_FUNC = nil, draw_func: SCENE_DRAW_FUNC = nil, deinit_func: SCENE_INIT_FUNC = nil, allocator := context.allocator) {
+    context.allocator = allocator
+    scene.local_transforms = make([dynamic]la.Matrix4f32)
+    scene.world_transforms = make([dynamic]la.Matrix4f32)
+    scene.hierarchy = make([dynamic]Hierarchy)
+    scene.mesh_for_node = make([dynamic]u32)
+    scene.material_for_node = make([dynamic]u32)
+    scene.name_for_node = make([dynamic]u32)
+    scene.node_names = make([dynamic]string)
+    scene.materials = make([dynamic]Material_Instance)
+    scene.meshes = make([dynamic]Mesh_Asset)
+
+    scene.init_func_for_node   = make([dynamic]INIT_FUNC)
+    scene.draw_func_for_node   = make([dynamic]DRAW_FUNC)
+    scene.deinit_func_for_node = make([dynamic]DEINIT_FUNC)
+
+    scene.init_func_scene = init_func
+    scene.draw_func_scene = draw_func
+    scene.deinit_func_scene = deinit_func
+}
+
 
 scene_add_mesh_node :: proc(
     scene: ^Scene,
     #any_int parent: i32,
-    #any_int mesh_index, material_index: u32,
+    #any_int mesh_index,
+    material_index:u32,
     name: string = "",
+    init_func: INIT_FUNC = nil, draw_func: DRAW_FUNC = nil, deinit_func: DEINIT_FUNC = nil,
 ) -> i32 {
 
     level := parent > -1 ? scene.hierarchy[parent].level + 1 : 0
@@ -100,7 +139,6 @@ update_all_transforms :: proc(scene: ^Scene) {
 
 scene_draw_node :: proc(scene: ^Scene, #any_int node_index: i32, ctx: ^Draw_Context) {
 
-
     node_matrix := la.matrix_mul(
                      scene.local_transforms[node_index],
                      scene.world_transforms[node_index],
@@ -108,7 +146,6 @@ scene_draw_node :: proc(scene: ^Scene, #any_int node_index: i32, ctx: ^Draw_Cont
     if scene.mesh_for_node[node_index] != NO_MESH {
         mesh_index := scene.mesh_for_node[node_index]
         mesh := &scene.meshes[mesh_index]
-
 
         for &surface in mesh.surfaces {
             material_index := surface.material_index

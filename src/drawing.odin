@@ -55,8 +55,7 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
         offset = 0,
         type = .UNIFORM_BUFFER)
     descriptor_writer_update_set(&writer, global_descriptor)
-
-
+    
     for &draw in self.main_draw_context.opaque_surfaces {
         material := &self.scene.materials[draw.material]
 
@@ -70,7 +69,7 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
             &global_descriptor,
             0,
             nil, 
-            )
+        )
         vk.CmdBindDescriptorSets(
             cmd,
             .GRAPHICS,
@@ -164,18 +163,49 @@ engine_draw ::proc(self: ^Engine) -> (ok: bool){
     }
 
     vk_check(vk.BeginCommandBuffer(cmd, &cmd_begin_info)) or_return
+    /*
+        This whole section can be difficult to understand but the basic 'gist is that our image buffers contain garbage from the prvious frames. So transitioning them is more like re-initializing them to the state we need. During the lifetime of the frame the GPU is doing crazy bullshit to optimize the hell out out of the data which by the next frame leaves the buffers in an undefined state.
+    */
+    
     
     transition_image(cmd, self.draw_image.image, .UNDEFINED, .GENERAL)
 
     engine_draw_background(self, cmd) or_return
-
-
+    //
+    // ocean_sim := &self.scene.ocean.sim_data
+    // transition_image(cmd, ocean_sim.jonswap_texture.image, .UNDEFINED, .GENERAL)
+    // vk.CmdBindPipeline(cmd, .COMPUTE, ocean_sim.jonswap_pipeline)
+    // vk.CmdBindDescriptorSets(
+    //     cmd,
+    //     .COMPUTE,
+    //     ocean_sim.jonswap_layout,
+    //     0,
+    //     1,
+    //     &ocean_sim.jonswap_descriptor,
+    //     0,
+    //     nil,
+    // )
+    // vk.CmdPushConstants(
+    //     cmd,
+    //     ocean_sim.jonswap_layout,
+    //     {.COMPUTE},
+    //     0,
+    //     size_of(Spectrum_Parameters),
+    //     &ocean_sim.spectrum_params,
+    // )
+    // vk.CmdDispatch(
+    //     cmd,
+    //     u32(math.ceil_f32(f32(DOMAIN_GRAPH_EXTENT.width) / 16.0)),
+    //     u32(math.ceil_f32(f32(DOMAIN_GRAPH_EXTENT.height) / 16.0)),
+    //     1,
+    // )
+    // transition_image(cmd, ocean_sim.jonswap_texture.image, .GENERAL, .SHADER_READ_ONLY_OPTIMAL)
+    //
     transition_image(cmd, self.draw_image.image, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL)
     transition_image(cmd, self.depth_image.image, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL)
 
     engine_draw_geometry(self, cmd) or_return
-    
-    transition_image(cmd, self.draw_image.image, .COLOR_ATTACHMENT_OPTIMAL, .TRANSFER_SRC_OPTIMAL)
+         transition_image(cmd, self.draw_image.image, .COLOR_ATTACHMENT_OPTIMAL, .TRANSFER_SRC_OPTIMAL)
 
     transition_image(cmd, self.swapchain_images[swapchain_image_index], .UNDEFINED, .TRANSFER_DST_OPTIMAL)
 
@@ -214,25 +244,11 @@ engine_draw ::proc(self: ^Engine) -> (ok: bool){
     } else {
         vk_check(result) or_return
     }
-
+ 
     self.frame_number += 1
 
     return true
 }
-// Initialize a new scene.
-scene_init :: proc(scene: ^Scene, allocator := context.allocator) {
-    context.allocator = allocator
-    scene.local_transforms = make([dynamic]la.Matrix4f32)
-    scene.world_transforms = make([dynamic]la.Matrix4f32)
-    scene.hierarchy = make([dynamic]Hierarchy)
-    scene.mesh_for_node = make([dynamic]u32)
-    scene.material_for_node = make([dynamic]u32)
-    scene.name_for_node = make([dynamic]u32)
-    scene.node_names = make([dynamic]string)
-    scene.materials = make([dynamic]Material_Instance)
-    scene.meshes = make([dynamic]Mesh_Asset)
-}
-
 // Free scene resources.
 scene_destroy :: proc(scene: ^Scene, allocator := context.allocator) {
     context.allocator = allocator

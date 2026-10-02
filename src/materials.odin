@@ -2,7 +2,8 @@ package astro
 
 import la "core:math/linalg"
 import vk "vendor:vulkan"
-
+import "core:log"
+import "core:fmt"
 
 Material_Pass :: enum u8 {
     Main_Color,
@@ -16,6 +17,7 @@ Material_Pipeline :: struct {
 }
 
 Material_Shader :: struct {
+    name: string,
     device: vk.Device,
     material_layout: vk.DescriptorSetLayout,
     layout: vk.PipelineLayout,
@@ -57,10 +59,6 @@ Metallic_Roughness :: struct {
     writer: Descriptor_Writer,
 }
 
-metallic_roughness_build_pipelines :: proc(self: ^Metallic_Roughness, engine: ^Engine) -> (ok: bool,) {
-    return true
-}
-
 material_shader_clear_resources :: proc(self: Material_Shader) {
     vk.DestroyDescriptorSetLayout(self.device, self.material_layout, nil)
     vk.DestroyPipelineLayout(self.device, self.layout, nil)
@@ -100,7 +98,7 @@ metallic_roughness_write :: proc(
         material = material_shader_write(
             &self.shader, device, pass, descriptor_allocator,
         ) or_return
-        
+
         descriptor_writer_init(&self.writer, device)
         descriptor_writer_clear(&self.writer)
         descriptor_writer_write_buffer(
@@ -142,15 +140,10 @@ metallic_roughness_build_pipeline :: proc(
     descriptor_layout_builder_add_binding(&layout_builder, 0, .UNIFORM_BUFFER)
     descriptor_layout_builder_add_binding(&layout_builder, 1, .COMBINED_IMAGE_SAMPLER)
     descriptor_layout_builder_add_binding(&layout_builder, 2, .COMBINED_IMAGE_SAMPLER)
+
     material_layout := descriptor_layout_builder_build(&layout_builder, {.VERTEX, .FRAGMENT}) or_return
-    //
-    // config := Material_Shader_Config {
-    //     vertex_shader = #load("./../shaders/compiled/mesh.vert.spv"),
-    //     fragment_shader = #load("./../shaders/compiled/mesh.frag.spv"),
-    //     material_layout = material_layout,
-    // }
-    //
-        if "mesh.frag" not_in engine.shader_manager.shaders && "mesh.vert" not_in engine.shader_manager.shaders {
+
+    if "mesh.frag" not_in engine.shader_manager.shaders && "mesh.vert" not_in engine.shader_manager.shaders {
         return false
     }
 
@@ -163,7 +156,8 @@ metallic_roughness_build_pipeline :: proc(
         material_layout = material_layout,
     }
     material_shader_build(&self.shader, engine, config) or_return
-
+    self.shader.name = "Metallic Roughness" 
+        
     return true
 }
 
@@ -172,6 +166,7 @@ material_shader_build :: proc(
     engine: ^Engine,
     config: Material_Shader_Config,
 ) -> (ok: bool) {
+
     vertex_shader := create_shader_module(engine.vk_device, config.vertex_shader) or_return
     defer vk.DestroyShaderModule(engine.vk_device, vertex_shader, nil)
 
@@ -237,7 +232,7 @@ material_shader_build :: proc(
     defer if !ok {
         vk.DestroyPipeline(engine.vk_device, self.transparent_pipeline.pipeline, nil)
     }
-
+    deletion_queue_push(&engine.main_deletion_queue, self^)
     return true
 }
 

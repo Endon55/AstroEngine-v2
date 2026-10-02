@@ -13,7 +13,7 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
     scene_init(&self.scene)
 
     camera_init(&self.scene.camera, .Orthographic, true)
-    ocean_init(&self.scene.ocean)
+    // ocean_init(&self.scene.ocean)
     load_gltf_meshes(self, "build/assets/basicmesh.glb", &self.scene.meshes) or_return
     defer if !ok {
         destroy_mesh_assets(&self.scene.meshes)
@@ -21,15 +21,12 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
    
     white := pack_unorm_4x8({1,1,1,1})
     self.white_image = create_image_from_data(self, &white, {1,1,1}, .R8G8B8A8_UNORM, {.SAMPLED}) or_return
-    deletion_queue_push(&self.main_deletion_queue, self.white_image)
 
     grey := pack_unorm_4x8({0.66,0.66,0.66,1})
     self.grey_image = create_image_from_data(self, &grey, {1,1,1}, .R8G8B8A8_UNORM, {.SAMPLED}) or_return
-    deletion_queue_push(&self.main_deletion_queue, self.grey_image)
 
     black := pack_unorm_4x8({0,0,0,0})
     self.black_image = create_image_from_data(self, &black, {1,1,1}, .R8G8B8A8_UNORM, {.SAMPLED}) or_return
-    deletion_queue_push(&self.main_deletion_queue, self.black_image)
 
     magenta := pack_unorm_4x8({1,0,1,1})
     pixels: [16*16]u32
@@ -39,7 +36,6 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
         }
     }
     self.error_checkerboard_image = create_image_from_data(self, raw_data(pixels[:]), {16,16,1}, .R8G8B8A8_UNORM, {.SAMPLED}) or_return
-    deletion_queue_push(&self.main_deletion_queue, self.error_checkerboard_image)
 
     sampler_info := vk.SamplerCreateInfo {
         sType = .SAMPLER_CREATE_INFO,
@@ -117,8 +113,8 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
         self.scene.local_transforms[suzanne_node] = la.matrix_mul(self.scene.local_transforms[suzanne_node], la.matrix4_rotate_f32(1.5, {1, 0, 0}))
     }
 
-    plane_size: u32 = self.scene.ocean.plane_size
-    plane_size2: u32 = self.scene.ocean.plane_size2 
+    plane_size: u32 = 10 
+    plane_size2: u32 = plane_size / 2 
 
 
     // Find and update Cube nodes (create a line of cubes)
@@ -160,7 +156,7 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
         self.scene.local_transforms[cross_idx], 
     la.matrix4_translate_f32({0,0, 3})
     )
-    ocean_init_default_data(&self.scene.ocean, self)
+    // ocean_init_default_data(&self.scene.ocean, self) or_return
     return true
 }
 

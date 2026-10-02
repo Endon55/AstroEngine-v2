@@ -16,7 +16,7 @@ import im_vk "libs:imgui/backends/vulkan"
 
 TITLE :: "Astro Engine v2"
 DEFAULT_WINDOW_EXTENT :: vk.Extent2D{1280, 678}
-
+DEFAULT_BACKGROUND :: Compute_Effect_Kind(.Sky)
 FRAME_OVERLAP :: 2
 /*
     Engine remaps the coordinate space to something more understandable as a lay-person such as the dumbass coding this.
@@ -128,6 +128,7 @@ Compute_Push_Constants :: struct {
 Compute_Effect_Kind :: enum {
     Gradient,
     Sky,
+    Buffer,
 }
 
 Compute_Effect :: struct {
@@ -188,14 +189,27 @@ engine_ui_definition :: proc(self: ^Engine) {
             im.EndCombo()
         }
 
-        im.InputFloat4("data1", &selected.data.data1)
-        im.InputFloat4("data2", &selected.data.data2)
-        im.InputFloat4("data3", &selected.data.data3)
-        im.InputFloat4("data4", &selected.data.data4)
+        im.SliderFloat4("data1", &selected.data.data1, 0.0, 10.0)
+        im.SliderFloat4("data2", &selected.data.data2, 0.0, 10.0)
+        im.SliderFloat4("data3", &selected.data.data3, 0.0, 10.0)
+        im.SliderFloat4("data4", &selected.data.data4, 0.0, 10.0)
 
     }
     im.End()
-
+    //
+    // if im.Begin("Ocean", nil, {.AlwaysAutoResize}) {
+    //     params := &self.scene.ocean.sim_data.spectrum_params
+    //     im.SliderFloat("Wind speed", &params.wind_speed, 0.0, 30.0)
+    //     im.SliderFloat("Fetch", &params.fetch, 0.0, 500000.0)
+    //     im.SliderFloat("Peaking", &params.peaking, 1.0, 10.0)
+    //     im.SliderFloat("Scale", &params.scale, 0.0, 10.0)
+    //     im.SliderFloat("Short waves fade", &params.short_waves_fade, 0.0, 1.0)
+    //     im.SliderFloat("Alignment", &params.alignment, 0.0, 1.0)
+    //     im.SliderFloat("Extra alignment", &params.extra_alignment, 0.0, 1.0)
+    //     im.SliderFloat("Patch size", &params.patch_size, 1.0, 5000.0)
+    // }
+    // im.End()
+    //
     im.Render()
 }
 
@@ -281,7 +295,7 @@ engine_run :: proc(self: ^Engine) -> (ok: bool) {
     for !glfw.WindowShouldClose(self.window) {
         glfw.PollEvents()
         input_update(&self.input)
-        self.scene.ocean.ocean_data.time += f32(t.delta_time)
+        //self.scene.ocean.ocean_data.time += f32(t.delta_time)
 
         if self.stop_rendering {
             glfw.WaitEvents()

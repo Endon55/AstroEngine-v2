@@ -257,6 +257,45 @@ load_shader_module :: proc(device: vk.Device, file_path: string,) -> (shader: vk
     return create_shader_module(device, code)
 }
 
+create_shader_pipeline_compute :: proc(self: ^Engine, shader_name:string, layout: vk.PipelineLayout,) -> (pipeline: vk.Pipeline, ok: bool) #optional_ok {
+
+    if shader_name not_in self.shader_manager.shaders {
+        log.warnf("Compute shader couldn't be found: %v", shader_name)
+        return pipeline, false
+    }
+    code:= self.shader_manager.shaders[shader_name].spirv_bytes
+    create_info := vk.ShaderModuleCreateInfo {
+        sType = .SHADER_MODULE_CREATE_INFO,
+        codeSize = len(code),
+        pCode = cast(^u32)raw_data(code),
+    }
+    shader: vk.ShaderModule
+    //Send the shader code to vulkan and create an object out of it
+    vk_check(vk.CreateShaderModule(self.vk_device, &create_info, nil, &shader), "Failed to create Shader Module",) or_return
+    defer vk.DestroyShaderModule(self.vk_device, shader, nil)
+
+    //Now use that module to define the shader pipeline
+    
+    stage_info := vk.PipelineShaderStageCreateInfo {
+        sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+        stage = {.COMPUTE},
+        module = shader,
+        pName = "main",
+    }
+    pipeline_create_info := vk.ComputePipelineCreateInfo {
+        sType = .COMPUTE_PIPELINE_CREATE_INFO,
+        layout = layout,
+        stage = stage_info,
+    }
+
+    vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &pipeline_create_info, nil, &pipeline,),) or_return
+
+
+    deletion_queue_push(&self.main_deletion_queue, pipeline)
+
+    return pipeline, true
+}
+
 create_shader_module :: proc(device: vk.Device, code: []byte,) -> (shader: vk.ShaderModule, ok: bool) #optional_ok {
     create_info := vk.ShaderModuleCreateInfo {
         sType = .SHADER_MODULE_CREATE_INFO,
