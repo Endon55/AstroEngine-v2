@@ -76,7 +76,10 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
 
     glfw.SetFramebufferSizeCallback(self.window, callback_framebuffer_size)
     glfw.SetWindowIconifyCallback(self.window, callback_window_minimize)
-   
+
+
+    game_manager_init(&self.game_manager, "", ) or_return
+
 
     log.debugf("Initializing Vulkan")
     engine_init_vulkan(self) or_return
@@ -747,7 +750,7 @@ engine_cleanup :: proc(self: ^Engine) {
     if !self.is_initialized {
         return
     }
-
+    game_manager_deinit(&self.game_manager, self)
     ensure(vk.DeviceWaitIdle(self.vk_device) == .SUCCESS)
 
     shader_manager_deinit(&self.shader_manager)

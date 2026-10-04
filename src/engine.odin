@@ -39,7 +39,6 @@ Engine::struct {
     vk_surface: vk.SurfaceKHR,
     vk_device: vk.Device,
     
-
     vkb: struct{
         instance: vkb.Instance,
         physical_device: vkb.Physical_Device,
@@ -65,6 +64,7 @@ Engine::struct {
 
     input: Input,
     shader_manager: Shader_Manager,
+    game_manager: Game_Manager,
 
     draw_image: Allocated_Image,
     depth_image: Allocated_Image,
@@ -152,7 +152,7 @@ engine_ui_definition :: proc(self: ^Engine) {
     im.SetNextWindowSize({250, v.WorkSize.y - 20})
     im.Begin("Hierarchy", nil, {.NoFocusOnAppearing, .NoCollapse, .NoResize})
     @(static) selected_node: i32 = -1
-    im.Text("Camera - %f, %f, %f", self.scene.camera.position.x, self.scene.camera.position.y, self.scene.camera.position.z)
+    // im.Text("Camera - %f, %f, %f", self.scene.camera.position.x, self.scene.camera.position.y, self.scene.camera.position.z)
     for &hierarchy, i in self.scene.hierarchy {
         if hierarchy.parent == -1 {
             render_scene_tree_ui(&self.scene, i, &selected_node)

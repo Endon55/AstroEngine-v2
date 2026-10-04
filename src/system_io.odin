@@ -34,7 +34,16 @@ load_directory_contents_from_disc :: proc(dir_name: string) -> (file_infos: []os
     }
     return infos, true
 }
+get_file_modification_time :: proc(fullpath: string) ->(mod_time: time.Time, ok:bool,) {
 
+        stats, err := os.stat(fullpath, context.allocator)
+        if err != os.ERROR_NONE {
+            log.errorf("Failed to read file data from: %v", fullpath)
+            return mod_time, false 
+        }
+        defer delete(stats.fullpath)
+        return stats.modification_time, true
+}
 modify_file_metadata_time :: proc(fullpath: string, modification_time, access_time: time.Time) ->(ok:bool,) {
 
     err := os.change_times(fullpath, access_time, modification_time)
@@ -53,4 +62,49 @@ save_file_to_disc :: proc(fullpath: string, data:[]byte, flags:= os.File_Flags{}
     } 
 
     return true
+}
+
+quick_calling_dir :: proc(allocator := context.allocator) -> (calling_dir: string, ok:bool,){
+    
+    calling_directory, err := os.get_executable_directory(allocator)
+    if err != nil {
+        log.errorf("Couldn't get executable directory")
+        return calling_dir, false
+    } 
+    return calling_directory, true
+}
+
+quick_calling_dir_subpath :: proc(subpath: string, allocator := context.allocator) -> (full_subpath:string, ok:bool) {
+    calling_dir := quick_calling_dir(allocator) or_return
+    full_subpath = quick_concat({calling_dir, subpath}, allocator) or_return 
+    delete(calling_dir)
+    return full_subpath, true
+}
+
+
+quick_cmd_line_runner :: proc(command:[]string, allocator := context.allocator) -> (ok:bool,) {
+    
+    info, std_out, std_err := quick_cmd_line_runner_with_output(command, allocator) or_return 
+    if(info.exit_code != 0) {
+        log.errorf("Program ended with non 0 exit code, piping output\nStd_Out: %v\nStd_Err: %v", string(std_out), string(std_err))
+    }
+    delete(std_out)
+    delete(std_err)
+
+    return true
+}
+
+quick_cmd_line_runner_with_output :: proc(command:[]string, allocator := context.allocator) -> (process_state: os.Process_State, std_out:[]byte, std_err: []byte, ok:bool,) {
+
+    cmd := os.Process_Desc {
+        command = command,
+    }
+    info, out, out_err, err := os.process_exec(cmd, allocator)
+
+    if err != nil {
+        log.errorf("Failed to run Terminal command -err: %v, command: %v\nStd_Out: %v\nStd_Err: %v",err, command, out, out_err)
+        return process_state, std_out, std_err, false
+    }
+
+    return info, out, out_err, true
 }

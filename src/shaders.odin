@@ -35,27 +35,14 @@ shader_manager_init :: proc(self: ^Shader_Manager) -> (ok: bool) {
     slang_compiler_init(&self.slang_compiler) or_return
     self.shaders = make(map[string]Shader)
 
-    calling_directory, err := os.get_executable_directory(context.allocator)
-    if err != nil {
-        log.warnf("Couldn't get executable directory")
-    } 
-    shader_root_dir, err_root := strings.concatenate({calling_directory, "/shaders"}, context.allocator)
-    if err_root != nil {
-        log.warnf("Failed to concatenate string")
-    } 
+    calling_directory := quick_calling_dir(context.allocator) or_return
+
+    shader_root_dir := quick_concat({calling_directory, "/shaders"}, context.allocator) or_return
     self.shader_directory = shader_root_dir
-    compiled, err_c := strings.concatenate({self.shader_directory, "/compiled/"}, context.allocator)
-    if err_c != nil {
-        log.warnf("Failed to concatenate string")
-    } 
-    source, err_s := strings.concatenate({self.shader_directory, "/source/"}, context.allocator)
-    if err_s != nil {
-        log.warnf("Failed to concatenate string")
-    } 
-    status, err_st := strings.concatenate({self.shader_directory, "/status.txt"}, context.allocator)
-    if err_st != nil {
-        log.warnf("Failed to concatenate string")
-    } 
+    compiled := quick_concat({self.shader_directory, "/compiled/"}, context.allocator) or_return
+    source := quick_concat({self.shader_directory, "/source/"}, context.allocator) or_return
+    status := quick_concat({self.shader_directory, "/status.txt"}, context.allocator) or_return
+     
     self.compiled_directory = compiled
     self.source_directory = source
     self.status_file = status
