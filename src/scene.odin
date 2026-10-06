@@ -48,18 +48,14 @@ Scene :: struct {
     material_for_node: [dynamic] u32,
     name_for_node: [dynamic] u32,
     node_names: [dynamic] string,
-    
-    init_func_for_node: [dynamic] INIT_FUNC,
-    draw_func_for_node: [dynamic] DRAW_FUNC,
-    deinit_func_for_node: [dynamic] DEINIT_FUNC,
-
     materials: [dynamic] Material_Instance,
 
     meshes: Mesh_Asset_List,
+
     init_func_scene: SCENE_INIT_FUNC,
     draw_func_scene: SCENE_DRAW_FUNC,
     deinit_func_scene: SCENE_INIT_FUNC,
-    // ocean: Ocean,
+    scene_data_ptr: rawptr,
 }
 
 scene_init :: proc(scene: ^Scene, init_func: SCENE_INIT_FUNC = nil, draw_func: SCENE_DRAW_FUNC = nil, deinit_func: SCENE_INIT_FUNC = nil, allocator := context.allocator) {
@@ -73,16 +69,7 @@ scene_init :: proc(scene: ^Scene, init_func: SCENE_INIT_FUNC = nil, draw_func: S
     scene.node_names = make([dynamic]string)
     scene.materials = make([dynamic]Material_Instance)
     scene.meshes = make([dynamic]Mesh_Asset)
-
-    scene.init_func_for_node   = make([dynamic]INIT_FUNC)
-    scene.draw_func_for_node   = make([dynamic]DRAW_FUNC)
-    scene.deinit_func_for_node = make([dynamic]DEINIT_FUNC)
-
-    scene.init_func_scene = init_func
-    scene.draw_func_scene = draw_func
-    scene.deinit_func_scene = deinit_func
 }
-
 
 scene_add_mesh_node :: proc(
     scene: ^Scene,

@@ -18,6 +18,7 @@ TITLE :: "Astro Engine v2"
 DEFAULT_WINDOW_EXTENT :: vk.Extent2D{1280, 678}
 DEFAULT_BACKGROUND :: Compute_Effect_Kind(.Sky)
 FRAME_OVERLAP :: 2
+DEFAULT_ALLOCATOR : runtime.Allocator
 /*
     Engine remaps the coordinate space to something more understandable as a lay-person such as the dumbass coding this.
     forward(+) backward(-) exist on the y-axis,
@@ -28,6 +29,9 @@ FRAME_OVERLAP :: 2
 */
 
 Engine::struct {
+    allocator: runtime.Allocator,
+    logger: runtime.Logger,
+
     window: glfw.WindowHandle,
     window_extent: vk.Extent2D,
     is_initialized: bool,

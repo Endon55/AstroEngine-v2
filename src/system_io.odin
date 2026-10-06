@@ -4,6 +4,9 @@ import "core:os"
 import "core:log"
 import "core:time"
 
+
+
+
 load_file_from_disc :: proc(file_name: string, flags:= os.File_Flags{}) ->(bytes : []byte, ok:bool,){
     file_handle, err := os.open(file_name, flags) 
     if err != nil {
@@ -34,6 +37,7 @@ load_directory_contents_from_disc :: proc(dir_name: string) -> (file_infos: []os
     }
     return infos, true
 }
+
 get_file_modification_time :: proc(fullpath: string) ->(mod_time: time.Time, ok:bool,) {
 
         stats, err := os.stat(fullpath, context.allocator)
@@ -43,7 +47,9 @@ get_file_modification_time :: proc(fullpath: string) ->(mod_time: time.Time, ok:
         }
         defer delete(stats.fullpath)
         return stats.modification_time, true
+
 }
+
 modify_file_metadata_time :: proc(fullpath: string, modification_time, access_time: time.Time) ->(ok:bool,) {
 
     err := os.change_times(fullpath, access_time, modification_time)
@@ -53,11 +59,12 @@ modify_file_metadata_time :: proc(fullpath: string, modification_time, access_ti
     }
     return true
 }
+
 save_file_to_disc :: proc(fullpath: string, data:[]byte, flags:= os.File_Flags{}) ->(ok:bool,) {
 
     err := os.write_entire_file(fullpath, data,)
     if err != os.ERROR_NONE{
-        log.warnf("Failed to write file: %v, to disc", fullpath)
+        log.warnf("Failed to write file to disc. File: %v, Data:", fullpath, string(data))
         return false
     } 
 
@@ -108,3 +115,4 @@ quick_cmd_line_runner_with_output :: proc(command:[]string, allocator := context
 
     return info, out, out_err, true
 }
+

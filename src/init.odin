@@ -15,12 +15,13 @@ import im_vk "libs:imgui/backends/vulkan"
 import "libs:vkb"
 import vma "libs:vma"
 
+
 engine_start :: proc() ->(ok:bool){
 
     when ODIN_DEBUG {
-        context.logger = log.create_console_logger(opt = {.Level, .Terminal_Color})
+        context.logger = log.create_console_logger(opt = {.Level, .Terminal_Color}, ident = "ENGINE")
         defer log.destroy_console_logger(context.logger)
-
+        DEFAULT_ALLOCATOR = context.allocator
         track: mem.Tracking_Allocator
         mem.tracking_allocator_init(&track, context.allocator)
         context.allocator = mem.tracking_allocator(&track)
@@ -44,6 +45,8 @@ engine_start :: proc() ->(ok:bool){
     }
 
     engine := new(Engine)
+    engine.logger = context.logger
+    engine.allocator = context.allocator
     ensure(engine != nil, "Failed to allocate 'Engine' object")
     defer free(engine)
 
@@ -104,6 +107,8 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
     log.debugf("Initializing Scene")
     engine_init_default_data(self) or_return
     self.is_initialized = true
+
+    game_manager_game_init(&self.game_manager, &self.scene, self)
 
     return true
 
