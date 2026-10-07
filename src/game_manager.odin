@@ -26,6 +26,7 @@ Game_Manager :: struct {
     game_allocator_track: mem.Tracking_Allocator,
     game_allocator: runtime.Allocator,
     game_logger: runtime.Logger,
+    build_status: Build_Status,
 
 }
 
@@ -101,8 +102,10 @@ is_library_outdated :: proc(self: ^Project) ->(ok:bool) {
 @(private="file")
 game_manager_init_library:: proc(self: ^Project, manager: ^Game_Manager, engine: ^Engine) ->(ok:bool, ){
     log.debugf("Compiling Game Library")
+    manager.build_status = .Compiling
     if !compile_library(self) {
         log.errorf("Library compilation failed")
+        manager.build_status = .Failed
         return true 
     }
     cache_library_save_times(self) or_return
@@ -110,8 +113,10 @@ game_manager_init_library:: proc(self: ^Project, manager: ^Game_Manager, engine:
     self.library, ok = dynlib.load_library(self.library_path)
     if ! ok {
         log.errorf("Failed to load game library: %v", dynlib.last_error())
+        manager.build_status = .Failed
         return false
     }
+    manager.build_status = .Success
     
     self.api = {
         init = cast(GAME_INIT_FUNC)(dynlib.symbol_address(self.library, "game_init") or_else nil),

@@ -168,3 +168,65 @@ scene_get_node_name :: proc(self:^Scene, #any_int node: i32) -> string {
     }
     return self.node_names[name_idx]
 }
+
+// Free scene resources.
+scene_destroy :: proc(scene: ^Scene, allocator := context.allocator) {
+    context.allocator = allocator
+    delete(scene.local_transforms)
+    delete(scene.world_transforms)
+    delete(scene.hierarchy)
+    delete(scene.mesh_for_node)
+    delete(scene.material_for_node)
+    delete(scene.name_for_node)
+    delete(scene.node_names)
+    delete(scene.materials)
+    delete(scene.meshes)
+}
+
+scene_add_node :: proc(scene: ^Scene, #any_int parent, level: i32) -> i32 {
+
+    node := i32(len(scene.hierarchy))
+    
+    append(&scene.local_transforms, la.MATRIX4F32_IDENTITY)
+    append(&scene.world_transforms, la.MATRIX4F32_IDENTITY)
+    
+    append(&scene.name_for_node, NO_NAME)
+    append(&scene.mesh_for_node, NO_MESH)
+    append(&scene.material_for_node, NO_MATERIAL)
+
+    new_hierarchy := Hierarchy {
+        parent = parent,
+        first_child = -1,
+        next_sibling = -1,
+        last_sibling = -1,
+        level = level,
+    }
+    append(&scene.hierarchy, new_hierarchy)
+
+    if parent > -1 {
+        first_child := scene.hierarchy[parent].first_child
+
+        if first_child == -1 {
+            scene.hierarchy[parent].first_child = node
+            scene.hierarchy[parent].last_sibling = node
+        } else {
+
+            last_sibling := scene.hierarchy[first_child].last_sibling
+            if last_sibling > -1 {
+                scene.hierarchy[last_sibling].next_sibling = node
+            } else {
+                dest := first_child
+                for scene.hierarchy[dest].next_sibling != -1 {
+                    dest = scene.hierarchy[dest].next_sibling
+                }
+                scene.hierarchy[dest].next_sibling = node
+            }
+            scene.hierarchy[first_child].last_sibling = node
+        }
+    }
+
+    return node
+}
+
+
+

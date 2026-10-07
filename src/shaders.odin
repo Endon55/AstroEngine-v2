@@ -25,6 +25,7 @@ Shader_Manager::struct {
     shader_dirs: [dynamic]Shader_Dir,
     shaders: map[string]Shader,
     slang_compiler: Slang_Compiler, 
+    build_status: Build_Status,
 }
 
 shader_manager_get_shader_index_by_name :: proc (self:^Shader_Manager, name:string) -> ^Shader{
@@ -38,7 +39,14 @@ shader_manager_add_directory :: proc(self:^Shader_Manager, directory: string, al
     shader_dir.source_directory = quick_concat({shader_dir.shader_directory, "source/"}, allocator) or_return
      
     append(&self.shader_dirs, shader_dir)
-    shader_manager_update_shaders(self, &self.shader_dirs[len(self.shader_dirs) - 1], "")
+    // Failure is sticky across directories.
+    prev_failed := self.build_status == .Failed
+    self.build_status = .Compiling
+    if shader_manager_update_shaders(self, &self.shader_dirs[len(self.shader_dirs) - 1], "") && !prev_failed {
+        self.build_status = .Success
+    } else {
+        self.build_status = .Failed
+    }
     return true
 }
 shader_manager_init :: proc(self: ^Shader_Manager) -> (ok: bool) {

@@ -251,61 +251,160 @@ engine_draw ::proc(self: ^Engine) -> (ok: bool){
 
     return true
 }
-// Free scene resources.
-scene_destroy :: proc(scene: ^Scene, allocator := context.allocator) {
-    context.allocator = allocator
-    delete(scene.local_transforms)
-    delete(scene.world_transforms)
-    delete(scene.hierarchy)
-    delete(scene.mesh_for_node)
-    delete(scene.material_for_node)
-    delete(scene.name_for_node)
-    delete(scene.node_names)
-    delete(scene.materials)
-    delete(scene.meshes)
+
+ui_status_row :: proc(label: cstring, status: Build_Status) {
+    size := im.GetFrameHeight()
+    pos := im.GetCursorScreenPos()
+    dl := im.GetWindowDrawList()
+    center := im.Vec2{pos.x + size * 0.5, pos.y + size * 0.5}
+    r := size * 0.3
+    thickness := max(2, size * 0.1)
+
+    switch status {
+    case .Idle:
+        im.DrawList_AddCircleFilled(dl, center, r * 0.4, im.ColorConvertFloat4ToU32({0.5, 0.5, 0.5, 1}))
+    case .Compiling:
+        t := f32(im.GetTime())
+        start := t * 8
+        im.DrawList_PathArcTo(dl, center, r, start, start + 4.5, 24)
+        im.DrawList_PathStroke(dl, im.ColorConvertFloat4ToU32({1, 0.8, 0.2, 1}), thickness)
+    case .Success:
+        col := im.ColorConvertFloat4ToU32({0.2, 0.9, 0.3, 1})
+        a := im.Vec2{center.x - r, center.y}
+        b := im.Vec2{center.x - r * 0.3, center.y + r * 0.7}
+        c := im.Vec2{center.x + r, center.y - r * 0.7}
+        im.DrawList_AddLine(dl, a, b, col, thickness)
+        im.DrawList_AddLine(dl, b, c, col, thickness)
+    case .Failed:
+        col := im.ColorConvertFloat4ToU32({0.95, 0.2, 0.2, 1})
+        im.DrawList_AddLine(dl, {center.x - r, center.y - r}, {center.x + r, center.y + r}, col, thickness)
+        im.DrawList_AddLine(dl, {center.x - r, center.y + r}, {center.x + r, center.y - r}, col, thickness)
+    }
+
+    im.Dummy({size, size})
+    im.SameLine()
+    im.Text("%s", label)
 }
 
-scene_add_node :: proc(scene: ^Scene, #any_int parent, level: i32) -> i32 {
+engine_ui_definition :: proc(self: ^Engine) {
+    // ImGUi new frame
+    im_glfw.NewFrame()
+    im_vk.NewFrame()
+    im.NewFrame()
 
-    node := i32(len(scene.hierarchy))
-    
-    append(&scene.local_transforms, la.MATRIX4F32_IDENTITY)
-    append(&scene.world_transforms, la.MATRIX4F32_IDENTITY)
-    
-    append(&scene.name_for_node, NO_NAME)
-    append(&scene.mesh_for_node, NO_MESH)
-    append(&scene.material_for_node, NO_MATERIAL)
-
-    new_hierarchy := Hierarchy {
-        parent = parent,
-        first_child = -1,
-        next_sibling = -1,
-        last_sibling = -1,
-        level = level,
-    }
-    append(&scene.hierarchy, new_hierarchy)
-
-    if parent > -1 {
-        first_child := scene.hierarchy[parent].first_child
-
-        if first_child == -1 {
-            scene.hierarchy[parent].first_child = node
-            scene.hierarchy[parent].last_sibling = node
-        } else {
-
-            last_sibling := scene.hierarchy[first_child].last_sibling
-            if last_sibling > -1 {
-                scene.hierarchy[last_sibling].next_sibling = node
-            } else {
-                dest := first_child
-                for scene.hierarchy[dest].next_sibling != -1 {
-                    dest = scene.hierarchy[dest].next_sibling
-                }
-                scene.hierarchy[dest].next_sibling = node
-            }
-            scene.hierarchy[first_child].last_sibling = node
+    game_manager_game_draw_ui(&self.game_manager, &self.scene, self)
+    v := im.GetMainViewport()
+    im.SetNextWindowPos({0, 0})
+    im.SetNextWindowSize({250, v.WorkSize.y * .8})
+    im.Begin("Hierarchy", nil, {.NoFocusOnAppearing, .NoCollapse, .NoResize})
+    @(static) selected_node: i32 = -1
+    // im.Text("Camera - %f, %f, %f", self.scene.camera.position.x, self.scene.camera.position.y, self.scene.camera.position.z)
+    for &hierarchy, i in self.scene.hierarchy {
+        if hierarchy.parent == -1 {
+            ui_scene_tree(&self.scene, i, &selected_node)
         }
     }
+    im.End()
 
-    return node
+    if im.Begin("Background", nil, {.AlwaysAutoResize}) {
+        im.SliderFloat("Render scale", &self.render_scale, 0.3, 1.0)
+
+        selected := &self.background_effects[self.current_background_effect]
+
+        im.Text("Selected effect: %s", selected.name)
+
+        @(static) current_background_effect: i32
+        current_background_effect = i32(self.current_background_effect)
+
+        // If the combo is opened and an item is selected, update the current effect
+        if im.BeginCombo("Effect", selected.name) {
+            for effect, i in self.background_effects {
+                is_selected := i32(i) == current_background_effect
+                if im.Selectable(effect.name, is_selected) {
+                    current_background_effect = i32(i)
+                    self.current_background_effect = Compute_Effect_Kind(
+                        current_background_effect,
+                    )
+                }
+
+                // Set initial focus when the currently selected item becomes visible
+                if is_selected {
+                    im.SetItemDefaultFocus()
+                }
+            }
+            im.EndCombo()
+        }
+
+        im.SliderFloat4("data1", &selected.data.data1, 0.0, 10.0)
+        im.SliderFloat4("data2", &selected.data.data2, 0.0, 10.0)
+        im.SliderFloat4("data3", &selected.data.data3, 0.0, 10.0)
+        im.SliderFloat4("data4", &selected.data.data4, 0.0, 10.0)
+
+    }
+    im.End()
+
+
+    //Compiler status 
+    size: im.Vec2 = {
+        v.WorkSize.x,
+        v.WorkSize.y * .2
+    }
+    pos : im.Vec2 = {
+        0,
+        v.WorkSize.y - size.y,
+        
+    }
+    im.SetNextWindowPos(pos)
+    im.SetNextWindowSize(size)
+    if im.Begin("Status", nil, {.NoFocusOnAppearing, .NoCollapse, .NoResize}) {
+        ui_status_row("Game library", self.game_manager.build_status)
+        ui_status_row("Shaders", self.shader_manager.build_status)
+    }
+    im.End()
+
+    im.Render()
 }
+
+ui_scene_tree :: proc(scene: ^Scene, #any_int node: i32, selected_node: ^i32) -> i32 {
+    name := scene_get_node_name(scene, node)
+    label := len(name) == 0 ? "NO NODE" : name
+    is_leaf := scene.hierarchy[node].first_child < 0
+    flags: im.TreeNodeFlags = is_leaf ? {.Leaf, .Bullet} : {}
+
+    if node == selected_node^ {
+        flags += {.Selected}
+    }
+
+    // Make the node span the entire width
+    flags += {.SpanFullWidth, .FramePadding}
+
+    is_opened := im.TreeNodeExPtr(
+        &scene.hierarchy[node], flags, "%s", cstring(raw_data(label)))
+
+    // Check for clicks in the entire row area
+    was_clicked := im.IsItemClicked()
+
+    im.PushIDInt(node)
+    {
+        if was_clicked {
+            log.debugf("Selected node: %d (%s)", node, label)
+            selected_node^ = node
+        }
+
+        if is_opened {
+            for ch := scene.hierarchy[node].first_child;
+                ch != -1;
+                ch = scene.hierarchy[ch].next_sibling {
+                if sub_node := ui_scene_tree(scene, ch, selected_node); sub_node > -1 {
+                    selected_node^ = sub_node
+                }
+            }
+            im.TreePop()
+        }
+    }
+    im.PopID()
+
+    return selected_node^
+}
+
+

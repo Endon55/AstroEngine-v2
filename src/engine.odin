@@ -145,108 +145,12 @@ Compute_Effect :: struct {
 @(private)
 g_logger: log.Logger
 
-engine_ui_definition :: proc(self: ^Engine) {
-    // ImGUi new frame
-    im_glfw.NewFrame()
-    im_vk.NewFrame()
-    im.NewFrame()
-
-    game_manager_game_draw_ui(&self.game_manager, &self.scene, self)
-    v := im.GetMainViewport()
-    im.SetNextWindowPos({10, 10})
-    im.SetNextWindowSize({250, v.WorkSize.y - 20})
-    im.Begin("Hierarchy", nil, {.NoFocusOnAppearing, .NoCollapse, .NoResize})
-    @(static) selected_node: i32 = -1
-    // im.Text("Camera - %f, %f, %f", self.scene.camera.position.x, self.scene.camera.position.y, self.scene.camera.position.z)
-    for &hierarchy, i in self.scene.hierarchy {
-        if hierarchy.parent == -1 {
-            render_scene_tree_ui(&self.scene, i, &selected_node)
-        }
-    }
-    im.End()
-
-    if im.Begin("Background", nil, {.AlwaysAutoResize}) {
-        im.SliderFloat("Render scale", &self.render_scale, 0.3, 1.0)
-
-        selected := &self.background_effects[self.current_background_effect]
-
-        im.Text("Selected effect: %s", selected.name)
-
-        @(static) current_background_effect: i32
-        current_background_effect = i32(self.current_background_effect)
-
-        // If the combo is opened and an item is selected, update the current effect
-        if im.BeginCombo("Effect", selected.name) {
-            for effect, i in self.background_effects {
-                is_selected := i32(i) == current_background_effect
-                if im.Selectable(effect.name, is_selected) {
-                    current_background_effect = i32(i)
-                    self.current_background_effect = Compute_Effect_Kind(
-                        current_background_effect,
-                    )
-                }
-
-                // Set initial focus when the currently selected item becomes visible
-                if is_selected {
-                    im.SetItemDefaultFocus()
-                }
-            }
-            im.EndCombo()
-        }
-
-        im.SliderFloat4("data1", &selected.data.data1, 0.0, 10.0)
-        im.SliderFloat4("data2", &selected.data.data2, 0.0, 10.0)
-        im.SliderFloat4("data3", &selected.data.data3, 0.0, 10.0)
-        im.SliderFloat4("data4", &selected.data.data4, 0.0, 10.0)
-
-    }
-    im.End()
-
-    im.Render()
+Build_Status :: enum {
+    Idle,
+    Compiling,
+    Success,
+    Failed,
 }
-
-render_scene_tree_ui :: proc(scene: ^Scene, #any_int node: i32, selected_node: ^i32) -> i32 {
-    name := scene_get_node_name(scene, node)
-    label := len(name) == 0 ? "NO NODE" : name
-    is_leaf := scene.hierarchy[node].first_child < 0
-    flags: im.TreeNodeFlags = is_leaf ? {.Leaf, .Bullet} : {}
-
-    if node == selected_node^ {
-        flags += {.Selected}
-    }
-
-    // Make the node span the entire width
-    flags += {.SpanFullWidth, .FramePadding}
-
-    is_opened := im.TreeNodeExPtr(
-        &scene.hierarchy[node], flags, "%s", cstring(raw_data(label)))
-
-    // Check for clicks in the entire row area
-    was_clicked := im.IsItemClicked()
-
-    im.PushIDInt(node)
-    {
-        if was_clicked {
-            log.debugf("Selected node: %d (%s)", node, label)
-            selected_node^ = node
-        }
-
-        if is_opened {
-            for ch := scene.hierarchy[node].first_child;
-                ch != -1;
-                ch = scene.hierarchy[ch].next_sibling {
-                if sub_node := render_scene_tree_ui(scene, ch, selected_node); sub_node > -1 {
-                    selected_node^ = sub_node
-                }
-            }
-            im.TreePop()
-        }
-    }
-    im.PopID()
-
-    return selected_node^
-}
-
 //The modulous here isn't that expensive since FRAME_OVERLAP is a power of 2
 engine_get_current_frame :: #force_inline proc(self: ^Engine) -> ^Frame_Data #no_bounds_check {
     return &self.frames[self.frame_number % FRAME_OVERLAP]
