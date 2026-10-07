@@ -81,7 +81,6 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
     glfw.SetWindowIconifyCallback(self.window, callback_window_minimize)
 
 
-    game_manager_init(&self.game_manager, "", ) or_return
 
 
     log.debugf("Initializing Vulkan")
@@ -94,6 +93,7 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
     engine_init_sync_structures(self) or_return
 
     shader_manager_init(&self.shader_manager) or_return
+    game_manager_init(&self.game_manager, self, "", context.allocator) or_return
 
 
     log.debugf("Initializing Descriptors")
@@ -102,6 +102,7 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
     engine_init_pipelines(self) or_return
     log.debugf("Initializing ImGui")
     engine_init_imgui(self) or_return
+    game_manager_game_reload(&self.game_manager, &self.scene, self)
     log.debugf("Initializing Input")
     input_init(&self.input, self.window)
     log.debugf("Initializing Scene")

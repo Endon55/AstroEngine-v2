@@ -13,11 +13,6 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
     scene_init(&self.scene)
 
     camera_init(&self.scene.camera, .Orthographic, true)
-    // ocean_init(&self.scene.ocean)
-    load_gltf_meshes(self, "build/assets/basicmesh.glb", &self.scene.meshes) or_return
-    defer if !ok {
-        destroy_mesh_assets(&self.scene.meshes)
-    }
    
     white := pack_unorm_4x8({1,1,1,1})
     self.white_image = create_image_from_data(self, &white, {1,1,1}, .R8G8B8A8_UNORM, {.SAMPLED}) or_return

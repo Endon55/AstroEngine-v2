@@ -3,6 +3,7 @@ package astro
 import "core:os"
 import "core:log"
 import "core:time"
+import "core:path/filepath"
 
 
 
@@ -62,9 +63,18 @@ modify_file_metadata_time :: proc(fullpath: string, modification_time, access_ti
 
 save_file_to_disc :: proc(fullpath: string, data:[]byte, flags:= os.File_Flags{}) ->(ok:bool,) {
 
+    dir := filepath.dir(fullpath)
+    if !os.exists(dir) {
+        mk_err := os.make_directory_all(dir)
+        if mk_err != nil {
+            log.warnf("Failed to make parent directories for file. Err: %v, File: %v", mk_err, dir)
+            return false
+        }
+    }
+    
     err := os.write_entire_file(fullpath, data,)
     if err != os.ERROR_NONE{
-        log.warnf("Failed to write file to disc. File: %v, Data:", fullpath, string(data))
+        log.warnf("Failed to write file to disc.Error: %v,  File: %v", err, fullpath,)
         return false
     } 
 
@@ -92,13 +102,14 @@ quick_calling_dir_subpath :: proc(subpath: string, allocator := context.allocato
 quick_cmd_line_runner :: proc(command:[]string, allocator := context.allocator) -> (ok:bool,) {
     
     info, std_out, std_err := quick_cmd_line_runner_with_output(command, allocator) or_return 
-    if(info.exit_code != 0) {
+    success := info.exit_code == 0
+    if(!success) {
         log.errorf("Program ended with non 0 exit code, piping output\nStd_Out: %v\nStd_Err: %v", string(std_out), string(std_err))
     }
     delete(std_out)
     delete(std_err)
 
-    return true
+    return success 
 }
 
 quick_cmd_line_runner_with_output :: proc(command:[]string, allocator := context.allocator) -> (process_state: os.Process_State, std_out:[]byte, std_err: []byte, ok:bool,) {

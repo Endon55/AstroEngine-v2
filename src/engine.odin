@@ -151,6 +151,7 @@ engine_ui_definition :: proc(self: ^Engine) {
     im_vk.NewFrame()
     im.NewFrame()
 
+    game_manager_game_draw_ui(&self.game_manager, &self.scene, self)
     v := im.GetMainViewport()
     im.SetNextWindowPos({10, 10})
     im.SetNextWindowSize({250, v.WorkSize.y - 20})
@@ -200,20 +201,7 @@ engine_ui_definition :: proc(self: ^Engine) {
 
     }
     im.End()
-    //
-    // if im.Begin("Ocean", nil, {.AlwaysAutoResize}) {
-    //     params := &self.scene.ocean.sim_data.spectrum_params
-    //     im.SliderFloat("Wind speed", &params.wind_speed, 0.0, 30.0)
-    //     im.SliderFloat("Fetch", &params.fetch, 0.0, 500000.0)
-    //     im.SliderFloat("Peaking", &params.peaking, 1.0, 10.0)
-    //     im.SliderFloat("Scale", &params.scale, 0.0, 10.0)
-    //     im.SliderFloat("Short waves fade", &params.short_waves_fade, 0.0, 1.0)
-    //     im.SliderFloat("Alignment", &params.alignment, 0.0, 1.0)
-    //     im.SliderFloat("Extra alignment", &params.extra_alignment, 0.0, 1.0)
-    //     im.SliderFloat("Patch size", &params.patch_size, 1.0, 5000.0)
-    // }
-    // im.End()
-    //
+
     im.Render()
 }
 
@@ -347,6 +335,7 @@ engine_run :: proc(self: ^Engine) -> (ok: bool) {
 
         timer_tick(&t)
         engine_ui_definition(self)
+        game_manager_game_update(&self.game_manager, &self.scene, self, f32(t.delta_time))
         engine_draw(self) or_return
 
         when ODIN_DEBUG {

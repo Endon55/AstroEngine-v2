@@ -1,7 +1,7 @@
 package astro
 
 import "core:math"
-
+import "core:log"
 import intr "base:intrinsics"
 
 import vk "vendor:vulkan"
@@ -48,7 +48,9 @@ create_image_default :: proc(self: ^Engine, size: vk.Extent3D, format: vk.Format
     }
 
     view_info := imageview_create_info(new_image.image_format, new_image.image, aspect_flag)
-
+    if vk.CreateImageView == nil {
+        log.warnf("vk.CreateImageView is nil")
+    }
     vk_check(vk.CreateImageView(self.vk_device, &view_info, nil, &new_image.image_view)) or_return
 
     defer if !ok {

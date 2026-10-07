@@ -13,6 +13,9 @@ import im_vk "libs:imgui/backends/vulkan"
 engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool) {
     frame := engine_get_current_frame(self)
 
+    // Game draw records barriers/compute, which are illegal inside dynamic rendering.
+    game_manager_game_draw(&self.game_manager, &self.scene, self, cmd)
+
     color_attachment := attachment_info(self.draw_image.image_view, nil, .COLOR_ATTACHMENT_OPTIMAL)
     depth_attachment := depth_attachment_info(self.depth_image.image_view, .DEPTH_ATTACHMENT_OPTIMAL)
 
@@ -55,7 +58,6 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
         offset = 0,
         type = .UNIFORM_BUFFER)
     descriptor_writer_update_set(&writer, global_descriptor)
-    
     for &draw in self.main_draw_context.opaque_surfaces {
         material := &self.scene.materials[draw.material]
 

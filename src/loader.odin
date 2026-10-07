@@ -17,6 +17,7 @@ Geo_Surface :: struct {
 
 Mesh_Asset :: struct {
     name: string,
+    allocator: runtime.Allocator,
     surfaces: [dynamic]Geo_Surface,
     mesh_buffers: GPU_Mesh_Buffers,
 }
@@ -59,10 +60,11 @@ load_gltf_meshes :: proc(engine: ^Engine, file_path: string, meshes: ^Mesh_Asset
     for &mesh in data.meshes {
         // Allocate new mesh asset
         new_mesh := append_and_get_ref(meshes, Mesh_Asset{})
+        new_mesh.allocator = allocator
 
         // Set mesh name
         new_mesh.name =
-            mesh.name != nil ? strings.clone(string(mesh.name)) : strings.clone("unnamed_mesh")
+            mesh.name != nil ? strings.clone(string(mesh.name), allocator) : strings.clone("unnamed_mesh", allocator)
 
         // Initialize surfaces array for this mesh
         new_mesh.surfaces = make([dynamic]Geo_Surface, allocator)
@@ -317,16 +319,18 @@ load_gltf_meshes :: proc(engine: ^Engine, file_path: string, meshes: ^Mesh_Asset
 }
 
 // Destroys a single `Mesh_Asset` and frees all its resources.
-destroy_mesh_asset :: proc(mesh: ^Mesh_Asset, allocator := context.allocator) {
-    context.allocator = allocator
+destroy_mesh_asset :: proc(mesh: ^Mesh_Asset,) {
+    alloc := context.allocator
+    context.allocator = mesh.allocator
     delete(mesh.name)
     delete(mesh.surfaces)
+    context.allocator = alloc
 }
 
 // Destroys all mesh assets in a list.
-destroy_mesh_assets :: proc(meshes: ^Mesh_Asset_List, allocator := context.allocator) {
+destroy_mesh_assets :: proc(meshes: ^Mesh_Asset_List,) {
     for &mesh in meshes {
-        destroy_mesh_asset(&mesh, allocator)
+        destroy_mesh_asset(&mesh)
     }
 }
 

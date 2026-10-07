@@ -9,6 +9,7 @@ import "core:mem"
 import "base:runtime"
 
 import vk "vendor:vulkan"
+import im "libs:imgui"
 
 Game :: struct {
     name: string,
@@ -46,7 +47,7 @@ Project :: struct {
 game_manager_get_api :: proc(self:^Game_Manager) -> GameAPI {
     return self.project.api
 }
-game_manager_init :: proc(self: ^Game_Manager, path_to_project: string, allocator:=context.allocator) ->(ok:bool) {
+game_manager_init :: proc(self: ^Game_Manager, engine: ^Engine, path_to_project: string, allocator:=context.allocator) ->(ok:bool) {
 
     when ODIN_DEBUG {
         
@@ -74,46 +75,18 @@ game_manager_init :: proc(self: ^Game_Manager, path_to_project: string, allocato
         log.errorf("Project path is invalid: %v", path_to_project)
     }    
 
-    self.project.src_dir = quick_concat({self.project.directory, "/src"}) or_return
-    self.project.shader_dir = quick_concat({self.project.directory, "/shaders"}) or_return
-    self.project.asset_dir = quick_concat({self.project.directory, "/assets"}) or_return
-    self.project.tmp_dir = quick_concat({self.project.directory, "/tmp"}) or_return
+    self.project.src_dir = quick_concat({self.project.directory, "/src/"}) or_return
+    self.project.shader_dir = quick_concat({self.project.directory, "/shaders/"}) or_return
+    self.project.asset_dir = quick_concat({self.project.directory, "/assets/"}) or_return
+    self.project.tmp_dir = quick_concat({self.project.directory, "/tmp/"}) or_return
     self.project.library_path = quick_concat({self.project.directory, "/game.so"}) or_return
 
-    game_manager_init_library(&self.project, self) or_return
-    
-    
-    self.project.library, ok = dynlib.load_library(self.project.library_path)
-    if ! ok {
-        log.errorf("Failed to load game library: %v", dynlib.last_error())
-        return false
-    }
-    
-    self.project.api = {
-        init = cast(GAME_INIT_FUNC)(dynlib.symbol_address(self.project.library, "game_init") or_else nil),
-        update = cast(GAME_UPDATE_FUNC)(dynlib.symbol_address(self.project.library, "game_update") or_else nil),
-        draw = cast(GAME_DRAW_FUNC)(dynlib.symbol_address(self.project.library, "game_draw") or_else nil),
-        deinit= cast(GAME_DEINIT_FUNC)(dynlib.symbol_address(self.project.library, "game_deinit") or_else nil),
-    } 
 
-    if self.project.api.init == nil {
-        log.errorf("Game doesn't contain an init function")
-        return false
-    }
-    if self.project.api.update == nil {
-        log.errorf("Game doesn't contain an update function")
-        return false
-    }
-    if self.project.api.draw == nil {
-        log.errorf("Game doesn't contain an draw function")
-        return false
-    }
-    if self.project.api.deinit == nil {
-        log.errorf("Game doesn't contain an deinit function")
-        return false
-    }
+    shader_manager_add_directory(&engine.shader_manager, self.project.shader_dir)
+
+    game_manager_init_library(&self.project, self, engine) or_return
     
-    return true
+      return true
 }
 @(private="file")
 is_library_outdated :: proc(self: ^Project) ->(ok:bool) {
@@ -126,11 +99,44 @@ is_library_outdated :: proc(self: ^Project) ->(ok:bool) {
 }
 
 @(private="file")
-game_manager_init_library:: proc(self: ^Project, manager: ^Game_Manager) ->(ok:bool, ){
+game_manager_init_library:: proc(self: ^Project, manager: ^Game_Manager, engine: ^Engine) ->(ok:bool, ){
     log.debugf("Compiling Game Library")
-    compile_library(self) or_return
+    if !compile_library(self) {
+        log.errorf("Library compilation failed")
+        return true 
+    }
     cache_library_save_times(self) or_return
+  
+    self.library, ok = dynlib.load_library(self.library_path)
+    if ! ok {
+        log.errorf("Failed to load game library: %v", dynlib.last_error())
+        return false
+    }
+    
+    self.api = {
+        init = cast(GAME_INIT_FUNC)(dynlib.symbol_address(self.library, "game_init") or_else nil),
+        update = cast(GAME_UPDATE_FUNC)(dynlib.symbol_address(self.library, "game_update") or_else nil),
+        draw = cast(GAME_DRAW_FUNC)(dynlib.symbol_address(self.library, "game_draw") or_else nil),
+        draw_ui = cast(GAME_DRAW_UI_FUNC)(dynlib.symbol_address(self.library, "game_draw_ui") or_else nil),
+        deinit= cast(GAME_DEINIT_FUNC)(dynlib.symbol_address(self.library, "game_deinit") or_else nil),
+        reload = cast(GAME_RELOAD_FUNC)(dynlib.symbol_address(self.library, "game_reload") or_else nil),
+    } 
 
+    if self.api.init == nil {
+        log.errorf("Game doesn't contain an init function")
+    }
+    if self.api.update == nil {
+        log.errorf("Game doesn't contain an update function")
+    }
+    if self.api.draw == nil {
+        log.errorf("Game doesn't contain a draw function")
+    }
+    if self.api.deinit == nil {
+        log.errorf("Game doesn't contain a deinit function")
+    }
+    if self.api.reload == nil {
+        log.errorf("Game doesn't contain a reload function")
+    }
 
     return true
 }
@@ -184,6 +190,8 @@ cache_library_save_times_recursive :: proc(self:^Project, dir:string) ->(ok:bool
 }
 
 game_manager_deinit :: proc(self: ^Game_Manager, engine: ^Engine) -> (ok:bool,) {
+
+    game_manager_game_deinit(self, &engine.scene, engine)
     delete(self.calling_dir)
     delete(self.project.directory)
     delete(self.project.shader_dir)
@@ -194,6 +202,8 @@ game_manager_deinit :: proc(self: ^Game_Manager, engine: ^Engine) -> (ok:bool,) 
     delete(self.project.src_time_modification_cache)
  
     when ODIN_DEBUG {
+
+
         logger := context.logger
         context.logger = self.game_logger
         if len(self.game_allocator_track.allocation_map) > 0 {
@@ -213,30 +223,63 @@ game_manager_deinit :: proc(self: ^Game_Manager, engine: ^Engine) -> (ok:bool,) 
     mem.tracking_allocator_destroy(&self.game_allocator_track)
     }
 
-
-
     return true
 }
 
+game_manager_game_deinit :: proc(self: ^Game_Manager, scene: ^Scene, engine: ^Engine){
+    if self.project.api.deinit == nil {
+        return
+    } 
+    log.debug("Calling Game De-Initializer")
+    context.allocator = self.game_allocator
+    context.logger = self.game_logger
+
+    if !self.project.api.deinit(scene, engine) {
+        context.logger = engine.logger
+        log.errorf("Game failed to deinit properly")
+    }
+    context.allocator = engine.allocator
+    context.logger = engine.logger
+}
 
 GAME_INIT_FUNC :: #type proc(self: ^Scene, engine: ^Engine) ->(ok:bool)
 GAME_UPDATE_FUNC :: #type proc(self: ^Scene, engine: ^Engine, delta_time:f32,) ->(ok:bool)
 GAME_DRAW_FUNC :: #type proc(self: ^Scene, engine: ^Engine, cmd: vk.CommandBuffer) ->(ok:bool)
+GAME_DRAW_UI_FUNC :: #type proc(self: ^Scene, engine: ^Engine,) ->(ok:bool)
 GAME_DEINIT_FUNC :: #type proc(self: ^Scene, engine: ^Engine,) ->(ok:bool)
+// Per-module global state that must be re-established inside game.so.
+Game_Globals :: struct {
+    vk_proc_address:  rawptr,
+    vk_instance:      vk.Instance,
+    imgui_context:    ^im.Context,
+    imgui_alloc_func: im.MemAllocFunc,
+    imgui_free_func:  im.MemFreeFunc,
+    imgui_user_data:  rawptr,
+}
 
+GAME_RELOAD_FUNC :: #type proc(self: ^Scene, engine: ^Engine, globals: Game_Globals) ->(ok:bool,)
 
 
 GameAPI :: struct {
     init : GAME_INIT_FUNC,
     update : GAME_UPDATE_FUNC,
     draw: GAME_DRAW_FUNC,
+    draw_ui: GAME_DRAW_UI_FUNC,
     deinit: GAME_DEINIT_FUNC,
+    reload: GAME_RELOAD_FUNC,
 }
 
 game_manager_game_init :: proc(self: ^Game_Manager, scene: ^Scene, engine: ^Engine){
+    if self.project.api.init == nil {
+        return
+    } 
+
+    log.debug("Calling Game Initializer")
     context.allocator = self.game_allocator
     context.logger = self.game_logger
+
     if !self.project.api.init(scene, engine) {
+        context.logger = engine.logger
         log.errorf("Game failed to init properly")
     }
     context.allocator = engine.allocator
@@ -244,18 +287,67 @@ game_manager_game_init :: proc(self: ^Game_Manager, scene: ^Scene, engine: ^Engi
 }
 
 game_manager_game_update :: proc(self: ^Game_Manager, scene: ^Scene, engine: ^Engine, delta_time: f32){
+    if self.project.api.update == nil {
+        return
+    } 
+    context.allocator = self.game_allocator
+    context.logger = self.game_logger
+
     if !self.project.api.update(scene, engine, delta_time) {
+        context.logger = engine.logger
         log.errorf("Game failed to update properly")
     }
+    context.allocator = engine.allocator
+    context.logger = engine.logger
 }
 game_manager_game_draw :: proc(self: ^Game_Manager, scene: ^Scene, engine: ^Engine, cmd: vk.CommandBuffer){
+    if self.project.api.draw == nil {
+        return
+    } 
+    context.allocator = self.game_allocator
+    context.logger = self.game_logger
+
     if !self.project.api.draw(scene, engine, cmd) {
+        context.logger = engine.logger
         log.errorf("Game failed to draw properly")
     }
+    context.allocator = engine.allocator
+    context.logger = engine.logger
 }
 
-game_manager_game_deinit :: proc(self: ^Game_Manager, scene: ^Scene, engine: ^Engine){
-    if !self.project.api.deinit(scene, engine) {
-        log.errorf("Game failed to deinit properly")
+game_manager_game_draw_ui :: proc(self: ^Game_Manager, scene: ^Scene, engine: ^Engine ){
+    if self.project.api.draw_ui == nil {
+        return
+    } 
+    context.allocator = self.game_allocator
+    context.logger = self.game_logger
+
+    if !self.project.api.draw_ui(scene, engine) {
+        context.logger = engine.logger
+        log.errorf("Game failed to draw properly")
     }
+    context.allocator = engine.allocator
+    context.logger = engine.logger
+}
+
+game_manager_game_reload :: proc(self: ^Game_Manager, scene: ^ Scene, engine: ^Engine){
+    if self.project.api.reload== nil {
+        return
+    } 
+    globals := Game_Globals {
+        vk_proc_address = rawptr(vk.GetInstanceProcAddr),
+        vk_instance     = engine.vk_instance,
+        imgui_context   = im.GetCurrentContext(),
+    }
+    im.GetAllocatorFunctions(&globals.imgui_alloc_func, &globals.imgui_free_func, &globals.imgui_user_data)
+
+    context.allocator = self.game_allocator
+    context.logger = self.game_logger
+
+    if !self.project.api.reload(scene, engine, globals) {
+        context.logger = engine.logger
+        log.errorf("Game failed to reload properly")
+    }
+    context.allocator = engine.allocator
+    context.logger = engine.logger
 }

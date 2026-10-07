@@ -149,8 +149,9 @@ generate_cross :: proc (engine: ^ Engine, meshes: ^Mesh_Asset_List, arm_width:f3
  
     new_mesh := append_and_get_ref(meshes, Mesh_Asset{})
 
-    new_mesh.name = strings.clone("Cross")
-    new_mesh.surfaces = make([dynamic]Geo_Surface, context.allocator)
+    new_mesh.name = strings.clone("Cross", engine.allocator)
+    new_mesh.allocator = engine.allocator
+    new_mesh.surfaces = make([dynamic]Geo_Surface, engine.allocator)
     new_surface: Geo_Surface
     new_surface.start_index = 0
     new_surface.count = u32(len(indices))
@@ -217,8 +218,10 @@ generate_plane :: proc (engine: ^Engine, meshes: ^Mesh_Asset_List, size_x, size_
 
     new_mesh := append_and_get_ref(meshes, Mesh_Asset{})
 
-    new_mesh.name = strings.clone("Plane")
-    new_mesh.surfaces = make([dynamic]Geo_Surface, context.allocator)
+    new_mesh.name = strings.clone("Plane", engine.allocator)
+    new_mesh.allocator = engine.allocator
+    new_mesh.surfaces = make([dynamic]Geo_Surface, new_mesh.allocator)
+    
     new_surface: Geo_Surface
     new_surface.start_index = 0
     new_surface.count = u32(len(indices))
