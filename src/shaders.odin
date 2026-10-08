@@ -39,16 +39,25 @@ shader_manager_add_directory :: proc(self:^Shader_Manager, directory: string, al
     shader_dir.source_directory = quick_concat({shader_dir.shader_directory, "source/"}, allocator) or_return
      
     append(&self.shader_dirs, shader_dir)
-    // Failure is sticky across directories.
-    prev_failed := self.build_status == .Failed
-    self.build_status = .Compiling
-    if shader_manager_update_shaders(self, &self.shader_dirs[len(self.shader_dirs) - 1], "") && !prev_failed {
-        self.build_status = .Success
-    } else {
-        self.build_status = .Failed
-    }
+    shader_manager_update_shaders(self, &self.shader_dirs[len(self.shader_dirs) - 1], "")
     return true
 }
+
+shader_manager_get_shader :: proc(self:^Shader_Manager, name: string) -> (shader: Shader, ok:bool) {
+
+    if name not_in self.shaders {
+        log.warnf("Couldn't find shader: %v, Total Shader Count: %v", name, len(self.shaders)) 
+        return shader, false
+    }
+    return self.shaders[name], true
+
+}
+
+shader_manager_update :: proc(self: ^Shader_Manager, engine: ^Engine) {
+
+}
+
+
 shader_manager_init :: proc(self: ^Shader_Manager) -> (ok: bool) {
 
     self.shaders = make(map[string]Shader)
@@ -61,6 +70,9 @@ shader_manager_init :: proc(self: ^Shader_Manager) -> (ok: bool) {
     shader_manager_add_directory(self, shader_dir)
     delete(calling_directory)
     delete(shader_dir)
+
+
+
 
     return true
 }

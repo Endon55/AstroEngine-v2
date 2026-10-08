@@ -19,6 +19,7 @@ DEFAULT_WINDOW_EXTENT :: vk.Extent2D{1280, 678}
 DEFAULT_BACKGROUND :: Compute_Effect_Kind(.Sky)
 FRAME_OVERLAP :: 2
 DEFAULT_ALLOCATOR : runtime.Allocator
+ENGINE_ALLOCATOR : runtime.Allocator
 /*
     Engine remaps the coordinate space to something more understandable as a lay-person such as the dumbass coding this.
     forward(+) backward(-) exist on the y-axis,
@@ -145,12 +146,7 @@ Compute_Effect :: struct {
 @(private)
 g_logger: log.Logger
 
-Build_Status :: enum {
-    Idle,
-    Compiling,
-    Success,
-    Failed,
-}
+
 //The modulous here isn't that expensive since FRAME_OVERLAP is a power of 2
 engine_get_current_frame :: #force_inline proc(self: ^Engine) -> ^Frame_Data #no_bounds_check {
     return &self.frames[self.frame_number % FRAME_OVERLAP]
@@ -239,6 +235,7 @@ engine_run :: proc(self: ^Engine) -> (ok: bool) {
 
         timer_tick(&t)
         engine_ui_definition(self)
+        game_manager_update(&self.game_manager, self)
         game_manager_game_update(&self.game_manager, &self.scene, self, f32(t.delta_time))
         engine_draw(self) or_return
 

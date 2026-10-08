@@ -3,6 +3,8 @@ package astro
 
 import "core:math"
 import la "core:math/linalg"
+import "core:strings"
+import "core:log"
 
 matrix4_perspective_reverse_z_f32 :: proc "contextless" (fovy, aspect, near: f32, flip_y_axis := true,) ->(m: la.Matrix4f32,) #no_bounds_check {
     epsilon :: 0.00000095367431640625

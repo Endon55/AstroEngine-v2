@@ -8,40 +8,42 @@ import "core:path/filepath"
 
 
 
-load_file_from_disc :: proc(file_name: string, flags:= os.File_Flags{}) ->(bytes : []byte, ok:bool,){
+load_file_from_disc :: proc(file_name: string, flags:= os.File_Flags{}, allocator := context.allocator, loc:= #caller_location) ->(bytes : []byte, ok:bool,){
     file_handle, err := os.open(file_name, flags) 
     if err != nil {
-        log.error("Failed to open the file: %v", file_name)
+        log.errorf("Failed to open the file: %v", file_name)
         return nil, false
     }
     defer os.close(file_handle)
-    data, read_err := os.read_entire_file(file_handle, context.allocator)
+    data, read_err := os.read_entire_file(file_handle, allocator, loc)
     if read_err != nil {
-        log.error("Failed to read file data %v", file_name)
+        log.errorf("Failed to read file data %v", file_name)
         return nil, false
     }
     return data, true
 }
 
-load_directory_contents_from_disc :: proc(dir_name: string) -> (file_infos: []os.File_Info, ok: bool) {
+load_directory_contents_from_disc :: proc(dir_name: string, allocator := context.allocator) -> (file_infos: []os.File_Info, ok: bool) {
     
     dir_handle, err := os.open(dir_name)
     if err != nil {
+        log.errorf("Failed to open directory. Dir: %v", dir_name)
         return nil, false
     }
     defer os.close(dir_handle)
     
 
-    infos, read_err := os.read_dir(dir_handle, -1, context.allocator)
+    infos, read_err := os.read_dir(dir_handle, -1, allocator)
     if read_err != os.ERROR_NONE {
+        log.errorf("Failed to read directory contents. Err: %v, Dir: %v", read_err, dir_name)
         return nil, false
     }
     return infos, true
 }
 
-get_file_modification_time :: proc(fullpath: string) ->(mod_time: time.Time, ok:bool,) {
+get_file_modification_time :: proc(fullpath: string, allocator := context.allocator) ->(mod_time: time.Time, ok:bool,) {
 
-        stats, err := os.stat(fullpath, context.allocator)
+        stats, err := os.stat(fullpath, allocator)
         if err != os.ERROR_NONE {
             log.errorf("Failed to read file data from: %v", fullpath)
             return mod_time, false 
@@ -61,8 +63,7 @@ modify_file_metadata_time :: proc(fullpath: string, modification_time, access_ti
     return true
 }
 
-save_file_to_disc :: proc(fullpath: string, data:[]byte, flags:= os.File_Flags{}) ->(ok:bool,) {
-
+create_directory :: proc(fullpath: string) ->(ok:bool,) {
     dir := filepath.dir(fullpath)
     if !os.exists(dir) {
         mk_err := os.make_directory_all(dir)
@@ -71,7 +72,13 @@ save_file_to_disc :: proc(fullpath: string, data:[]byte, flags:= os.File_Flags{}
             return false
         }
     }
-    
+    return true
+}
+
+save_file_to_disc :: proc(fullpath: string, data:[]byte, flags:= os.File_Flags{}) ->(ok:bool,) {
+
+   create_directory(fullpath) or_return 
+
     err := os.write_entire_file(fullpath, data,)
     if err != os.ERROR_NONE{
         log.warnf("Failed to write file to disc.Error: %v,  File: %v", err, fullpath,)
@@ -126,4 +133,30 @@ quick_cmd_line_runner_with_output :: proc(command:[]string, allocator := context
 
     return info, out, out_err, true
 }
+//Doesn't change file extention
+copy_file_rename :: proc(source_path:string, destination_directory: string, new_name: string = "") ->(full_destination: string, ok:bool) {
 
+    create_directory(destination_directory) or_return
+
+    _, filename := os.split_path(source_path)
+    name, ext :=os.split_filename_all(filename)
+    if len(new_name) > 0 do name = new_name
+    
+    full_destination = quick_concat({destination_directory, "/", new_name, ".", ext}) or_return
+    err := os.copy_file(full_destination, source_path) 
+    if err != nil {
+        log.errorf("Failed to copy file from -%v- to -%v-", source_path, full_destination)
+        return full_destination, false
+    }
+    return full_destination, true
+}
+
+quick_file_stat :: proc(fullpath: string, allocator:= context.allocator) ->(os.File_Info, bool){
+    
+    info, err := os.stat(fullpath, allocator)
+    if err != nil {
+        log.errorf("Failed to read stats for file")
+        return info, false
+    }
+    return info, true
+}

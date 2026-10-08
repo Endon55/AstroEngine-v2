@@ -25,7 +25,7 @@ engine_start :: proc() ->(ok:bool){
         track: mem.Tracking_Allocator
         mem.tracking_allocator_init(&track, context.allocator)
         context.allocator = mem.tracking_allocator(&track)
-
+        ENGINE_ALLOCATOR = context.allocator
         defer {
             if len(track.allocation_map) > 0 {
                 log.errorf("=== %v allocations not freed ===", len(track.allocation_map))
@@ -478,18 +478,14 @@ engine_init_descriptors:: proc(self: ^Engine) -> (ok:bool) {
 }
 engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
 
-    if "gradient_color.comp" not_in self.shader_manager.shaders &&
-       "sky.comp" not_in self.shader_manager.shaders {
-        return false
-    }
-    gradient_comp :Shader = self.shader_manager.shaders["gradient_color.comp"]
+    gradient_comp :Shader = shader_manager_get_shader(&self.shader_manager,"gradient_color.comp") or_return
 
 
     GRADIENT_COLOR_SPV := gradient_comp.spirv_bytes 
     gradient_color_shader := create_shader_module(self.vk_device, GRADIENT_COLOR_SPV) or_return
     defer vk.DestroyShaderModule(self.vk_device, gradient_color_shader, nil)
 
-    sky_comp :Shader = self.shader_manager.shaders["sky.comp"]
+    sky_comp :Shader = shader_manager_get_shader(&self.shader_manager, "sky.comp") or_return
 
     SKY_SPV := sky_comp.spirv_bytes 
     sky_shader := create_shader_module(self.vk_device, SKY_SPV) or_return
@@ -765,7 +761,7 @@ engine_cleanup :: proc(self: ^Engine) {
         destroy_buffer(mesh.mesh_buffers.vertex_buffer)
     }
     destroy_mesh_assets(&self.scene.meshes)
-    scene_destroy(&self.scene)
+    scene_deinit(&self.scene)
     delete(self.main_draw_context.opaque_surfaces)
     delete(self.name_for_node)
 

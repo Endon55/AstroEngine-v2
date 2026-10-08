@@ -2,6 +2,7 @@ package astro
 
 import "base:builtin"
 import la "core:math/linalg"
+import "core:strings"
 import vk "vendor:vulkan"
 
 NO_MESH :: max(u32)
@@ -77,7 +78,6 @@ scene_add_mesh_node :: proc(
     #any_int mesh_index,
     material_index:u32,
     name: string = "",
-    init_func: INIT_FUNC = nil, draw_func: DRAW_FUNC = nil, deinit_func: DEINIT_FUNC = nil,
 ) -> i32 {
 
     level := parent > -1 ? scene.hierarchy[parent].level + 1 : 0
@@ -87,7 +87,8 @@ scene_add_mesh_node :: proc(
     scene.material_for_node[node] = material_index
 
     if len(name) > 0 {
-        name_idx := append_and_get_idx(&scene.node_names, name)
+        // Callers in game.so pass literals that live in the library and dangle after a hot reload.
+        name_idx := append_and_get_idx(&scene.node_names, strings.clone(name, ENGINE_ALLOCATOR))
         scene.name_for_node[u32(node)] = name_idx
     }
 
@@ -170,13 +171,16 @@ scene_get_node_name :: proc(self:^Scene, #any_int node: i32) -> string {
 }
 
 // Free scene resources.
-scene_destroy :: proc(scene: ^Scene, allocator := context.allocator) {
+scene_deinit :: proc(scene: ^Scene, allocator := context.allocator) {
     context.allocator = allocator
     delete(scene.local_transforms)
     delete(scene.world_transforms)
     delete(scene.hierarchy)
     delete(scene.mesh_for_node)
     delete(scene.material_for_node)
+    for name in scene.node_names{
+        delete(name)
+    }
     delete(scene.name_for_node)
     delete(scene.node_names)
     delete(scene.materials)

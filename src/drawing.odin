@@ -357,7 +357,7 @@ engine_ui_definition :: proc(self: ^Engine) {
     im.SetNextWindowPos(pos)
     im.SetNextWindowSize(size)
     if im.Begin("Status", nil, {.NoFocusOnAppearing, .NoCollapse, .NoResize}) {
-        ui_status_row("Game library", self.game_manager.build_status)
+        ui_status_row("Game library", self.game_manager.library.build_status)
         ui_status_row("Shaders", self.shader_manager.build_status)
     }
     im.End()
