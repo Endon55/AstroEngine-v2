@@ -143,12 +143,11 @@ metallic_roughness_build_pipeline :: proc(
 
     material_layout := descriptor_layout_builder_build(&layout_builder, {.VERTEX, .FRAGMENT}) or_return
 
-    if "mesh.frag" not_in engine.shader_manager.shaders && "mesh.vert" not_in engine.shader_manager.shaders {
+    vertex, has_vertex := shader_manager_get_shader(&engine.shader_manager, "engine/mesh.vert")
+    fragment, has_fragment := shader_manager_get_shader(&engine.shader_manager, "engine/mesh.frag")
+    if !has_vertex || !has_fragment {
         return false
     }
-
-    vertex :Shader = engine.shader_manager.shaders["mesh.vert"]
-    fragment :Shader = engine.shader_manager.shaders["mesh.frag"]
 
     config := Material_Shader_Config {
         vertex_shader = vertex.spirv_bytes, 
@@ -198,6 +197,34 @@ material_shader_build :: proc(
         vk.DestroyPipelineLayout(engine.vk_device, self.layout, nil)
     }
 
+    pipelines := material_shader_create_pipelines(self, engine, vertex_shader, fragment_shader) or_return
+    self.opaque_pipeline = pipelines.opaque
+    self.transparent_pipeline = pipelines.transparent
+    return true
+}
+
+Material_Shader_Pipelines :: struct {
+    opaque: Material_Pipeline,
+    transparent: Material_Pipeline,
+}
+
+material_shader_rebuild_pipelines :: proc(
+    self: ^Material_Shader,
+    engine: ^Engine,
+    vertex_code, fragment_code: []byte,
+) -> (pipelines: Material_Shader_Pipelines, ok: bool) {
+    vertex_shader := create_shader_module(engine.vk_device, vertex_code) or_return
+    defer vk.DestroyShaderModule(engine.vk_device, vertex_shader, nil)
+    fragment_shader := create_shader_module(engine.vk_device, fragment_code) or_return
+    defer vk.DestroyShaderModule(engine.vk_device, fragment_shader, nil)
+    return material_shader_create_pipelines(self, engine, vertex_shader, fragment_shader)
+}
+
+material_shader_create_pipelines :: proc(
+    self: ^Material_Shader,
+    engine: ^Engine,
+    vertex_shader, fragment_shader: vk.ShaderModule,
+) -> (pipelines: Material_Shader_Pipelines, ok: bool) {
     pipeline_builder := pipeline_builder_create_default()
     pipeline_builder_set_shaders(&pipeline_builder, vertex_shader, fragment_shader)
     pipeline_builder_set_input_topology(&pipeline_builder, .TRIANGLE_LIST)
@@ -214,25 +241,22 @@ material_shader_build :: proc(
 
     pipeline_builder.pipeline_layout = self.layout
 
-    self.opaque_pipeline = {
+    pipelines.opaque = {
         pipeline = pipeline_builder_build(&pipeline_builder, engine.vk_device) or_return,
         layout = self.layout,
     }
     defer if !ok {
-        vk.DestroyPipeline(engine.vk_device, self.opaque_pipeline.pipeline, nil)
+        vk.DestroyPipeline(engine.vk_device, pipelines.opaque.pipeline, nil)
     }
 
     pipeline_builder_enable_blending_additive(&pipeline_builder)
     pipeline_builder_enable_depth_test(&pipeline_builder, false, .GREATER_OR_EQUAL)
 
-    self.transparent_pipeline = {
+    pipelines.transparent = {
         pipeline = pipeline_builder_build(&pipeline_builder, engine.vk_device) or_return,
         layout = self.layout,
     }
-    defer if !ok {
-        vk.DestroyPipeline(engine.vk_device, self.transparent_pipeline.pipeline, nil)
-    }
-    deletion_queue_push(&engine.main_deletion_queue, self^)
-    return true
+    ok = true
+    return pipelines, true
 }
 

@@ -257,13 +257,14 @@ load_shader_module :: proc(device: vk.Device, file_path: string,) -> (shader: vk
     return create_shader_module(device, code)
 }
 
-create_shader_pipeline_compute :: proc(self: ^Engine, shader_name:string, layout: vk.PipelineLayout,) -> (pipeline: vk.Pipeline, ok: bool) #optional_ok {
+create_shader_pipeline_compute :: proc(self: ^Engine, shader_name:string, layout: vk.PipelineLayout, register_for_cleanup := true, loc:= #caller_location) -> (pipeline: vk.Pipeline, ok: bool) #optional_ok {
 
-    if shader_name not_in self.shader_manager.shaders {
+    shader_asset, found := shader_manager_get_shader(&self.shader_manager, shader_name, loc)
+    if !found {
         log.warnf("Compute shader couldn't be found: %v", shader_name)
         return pipeline, false
     }
-    code:= self.shader_manager.shaders[shader_name].spirv_bytes
+    code:= shader_asset.spirv_bytes
     create_info := vk.ShaderModuleCreateInfo {
         sType = .SHADER_MODULE_CREATE_INFO,
         codeSize = len(code),
@@ -291,7 +292,9 @@ create_shader_pipeline_compute :: proc(self: ^Engine, shader_name:string, layout
     vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &pipeline_create_info, nil, &pipeline,),) or_return
 
 
-    deletion_queue_push(&self.main_deletion_queue, pipeline)
+    if register_for_cleanup {
+        deletion_queue_push(&self.main_deletion_queue, pipeline)
+    }
 
     return pipeline, true
 }

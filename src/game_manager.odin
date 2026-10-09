@@ -109,7 +109,7 @@ game_manager_init :: proc(self: ^Game_Manager, engine: ^Engine, path_to_project:
     self.project.library_path = self.library.library_path
 
 
-    shader_manager_add_directory(&engine.shader_manager, self.project.shader_dir)
+    shader_manager_add_directory(&engine.shader_manager, self.project.shader_dir, .Game)
     if ok := spawn_game_compiler_thread(self); !ok {
         log.errorf("Failed to spawn the game compiler thread")
         return false
@@ -420,6 +420,7 @@ game_manager_deinit :: proc(self: ^Game_Manager, engine: ^Engine) -> (ok:bool,) 
     // for key in self.project.src_time_modification_cache {
     //     delete(key)
     // }
+
     delete(self.project.src_time_modification_cache)
  
     when ODIN_DEBUG {
@@ -456,6 +457,7 @@ GAME_UPDATE_FUNC :: #type proc(self: ^Scene, engine: ^Engine, delta_time:f32,) -
 GAME_DRAW_FUNC :: #type proc(self: ^Scene, engine: ^Engine, cmd: vk.CommandBuffer) ->(ok:bool)
 GAME_DRAW_UI_FUNC :: #type proc(self: ^Scene, engine: ^Engine,) ->(ok:bool)
 GAME_DEINIT_FUNC :: #type proc(self: ^Scene, engine: ^Engine,) ->(ok:bool)
+GAME_BUILD_PIPELINES_FUNC :: #type proc(self: ^Scene, engine: ^Engine,) ->(ok:bool)
 // Per-module global state that must be re-established inside game.so.
 Game_Globals :: struct {
     vk_proc_address:  rawptr,
@@ -475,6 +477,7 @@ GameAPI :: struct {
     draw: GAME_DRAW_FUNC,
     draw_ui: GAME_DRAW_UI_FUNC,
     deinit: GAME_DEINIT_FUNC,
+    build_pipelines: GAME_BUILD_PIPELINES_FUNC,
     reload: GAME_RELOAD_FUNC,
 }
 
@@ -541,6 +544,23 @@ game_manager_game_draw_ui :: proc(self: ^Game_Manager, scene: ^Scene, engine: ^E
     }
     context.allocator = engine.allocator
     context.logger = engine.logger
+}
+
+game_manager_game_build_pipelines :: proc(self: ^Game_Manager, scene: ^Scene, engine: ^Engine) -> (ok: bool) {
+    if self.library.api.build_pipelines == nil {
+        return true
+    }
+    context.allocator = self.game_allocator
+    context.logger = self.game_logger
+
+    ok = self.library.api.build_pipelines(scene, engine)
+    if !ok {
+        context.logger = engine.logger
+        log.errorf("Game failed to rebuild shader pipelines")
+    }
+    context.allocator = engine.allocator
+    context.logger = engine.logger
+    return ok
 }
 
 game_manager_game_reload :: proc(self: ^Game_Manager, scene: ^ Scene, engine: ^Engine){

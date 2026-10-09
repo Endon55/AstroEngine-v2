@@ -110,6 +110,7 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
     self.is_initialized = true
 
     game_manager_game_init(&self.game_manager, &self.scene, self)
+    shader_manager_start_hot_reload(&self.shader_manager) or_return
 
     return true
 
@@ -478,27 +479,18 @@ engine_init_descriptors:: proc(self: ^Engine) -> (ok:bool) {
 }
 engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
 
-    gradient_comp :Shader = shader_manager_get_shader(&self.shader_manager,"gradient_color.comp") or_return
+    gradient_comp :Shader = shader_manager_get_shader(&self.shader_manager,"engine/gradient_color.comp") or_return
 
 
     GRADIENT_COLOR_SPV := gradient_comp.spirv_bytes 
     gradient_color_shader := create_shader_module(self.vk_device, GRADIENT_COLOR_SPV) or_return
     defer vk.DestroyShaderModule(self.vk_device, gradient_color_shader, nil)
 
-    sky_comp :Shader = shader_manager_get_shader(&self.shader_manager, "sky.comp") or_return
+    sky_comp :Shader = shader_manager_get_shader(&self.shader_manager, "engine/sky.comp") or_return
 
     SKY_SPV := sky_comp.spirv_bytes 
     sky_shader := create_shader_module(self.vk_device, SKY_SPV) or_return
     defer vk.DestroyShaderModule(self.vk_device, sky_shader, nil)
-
-    if "generate_jonswap.comp" not_in self.shader_manager.shaders {       return false
-    }
-    buffer_comp :Shader = self.shader_manager.shaders["generate_jonswap.comp"]
-
-    BUFFER_SPV := buffer_comp.spirv_bytes 
-    buffer_shader:= create_shader_module(self.vk_device, BUFFER_SPV) or_return
-    defer vk.DestroyShaderModule(self.vk_device, buffer_shader, nil)
-
 
     stage_info := vk.PipelineShaderStageCreateInfo {
         sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -531,30 +523,76 @@ engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
     
     vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &compute_pipeline_create_info, nil, &sky.pipeline),) or_return
 
-    compute_pipeline_create_info.stage.module = buffer_shader
-
-    buffer := Compute_Effect {
-        layout = self.gradient_pipeline_layout,
-        name = "Buffer",
-        data = {data1 = {8.0, 100.0, 3.3, 1.0}, data3 = {250.0, 0, 0, 0}},
-    }
-    
-    vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &compute_pipeline_create_info, nil, &buffer.pipeline),) or_return
-
-
     self.background_effects[.Gradient] = gradient_color
     self.background_effects[.Sky] = sky
-    self.background_effects[.Buffer] = buffer
 
     deletion_queue_push(&self.main_deletion_queue, self.gradient_pipeline_layout)
-    deletion_queue_push(&self.main_deletion_queue, gradient_color.pipeline)
-    deletion_queue_push(&self.main_deletion_queue, sky.pipeline)
-    deletion_queue_push(&self.main_deletion_queue, buffer.pipeline)
 
     self.current_background_effect = DEFAULT_BACKGROUND    
 
     return true
 }
+
+engine_create_compute_pipeline :: proc(self: ^Engine, shader_name: string, loc :=#caller_location) -> (pipeline: vk.Pipeline, ok: bool) {
+    shader_asset := shader_manager_get_shader(&self.shader_manager, shader_name, loc) or_return
+    shader_module := create_shader_module(self.vk_device, shader_asset.spirv_bytes) or_return
+    defer vk.DestroyShaderModule(self.vk_device, shader_module, nil)
+
+    stage := vk.PipelineShaderStageCreateInfo {
+        sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
+        stage = {.COMPUTE},
+        module = shader_module,
+        pName = "main",
+    }
+    create_info := vk.ComputePipelineCreateInfo {
+        sType = .COMPUTE_PIPELINE_CREATE_INFO,
+        layout = self.gradient_pipeline_layout,
+        stage = stage,
+    }
+    vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &create_info, nil, &pipeline)) or_return
+    return pipeline, true
+}
+
+engine_build_pipelines :: proc(self: ^Engine) -> (ok: bool) {
+    gradient_pipeline := engine_create_compute_pipeline(self, "engine/gradient_color.comp") or_return
+    defer if !ok { vk.DestroyPipeline(self.vk_device, gradient_pipeline, nil) }
+    sky_pipeline := engine_create_compute_pipeline(self, "engine/sky.comp") or_return
+    defer if !ok { vk.DestroyPipeline(self.vk_device, sky_pipeline, nil) }
+    vertex, has_vertex := shader_manager_get_shader(&self.shader_manager, "engine/mesh.vert")
+    fragment, has_fragment := shader_manager_get_shader(&self.shader_manager, "engine/mesh.frag")
+    if !has_vertex || !has_fragment {
+        return false
+    }
+    material_pipelines := material_shader_rebuild_pipelines(
+        &self.metal_rough_material.shader,
+        self,
+        vertex.spirv_bytes,
+        fragment.spirv_bytes,
+    ) or_return
+    defer if !ok {
+        vk.DestroyPipeline(self.vk_device, material_pipelines.opaque.pipeline, nil)
+        vk.DestroyPipeline(self.vk_device, material_pipelines.transparent.pipeline, nil)
+    }
+
+    vk_check(vk.DeviceWaitIdle(self.vk_device)) or_return
+
+    old_gradient := self.background_effects[.Gradient].pipeline
+    old_sky := self.background_effects[.Sky].pipeline
+    old_opaque := self.metal_rough_material.shader.opaque_pipeline.pipeline
+    old_transparent := self.metal_rough_material.shader.transparent_pipeline.pipeline
+
+    self.background_effects[.Gradient].pipeline = gradient_pipeline
+    self.background_effects[.Sky].pipeline = sky_pipeline
+    self.metal_rough_material.shader.opaque_pipeline = material_pipelines.opaque
+    self.metal_rough_material.shader.transparent_pipeline = material_pipelines.transparent
+
+    vk.DestroyPipeline(self.vk_device, old_gradient, nil)
+    vk.DestroyPipeline(self.vk_device, old_sky, nil)
+    vk.DestroyPipeline(self.vk_device, old_opaque, nil)
+    vk.DestroyPipeline(self.vk_device, old_transparent, nil)
+    return true
+}
+
 engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) { 
     
     push_constant := vk.PushConstantRange {
@@ -752,8 +790,13 @@ engine_cleanup :: proc(self: ^Engine) {
     if !self.is_initialized {
         return
     }
-    game_manager_deinit(&self.game_manager, self)
     ensure(vk.DeviceWaitIdle(self.vk_device) == .SUCCESS)
+    game_manager_deinit(&self.game_manager, self)
+
+    for effect in self.background_effects {
+        vk.DestroyPipeline(self.vk_device, effect.pipeline, nil)
+    }
+    metallic_roughness_clear_resources(self.metal_rough_material)
 
     shader_manager_deinit(&self.shader_manager)
     for &mesh in self.scene.meshes {

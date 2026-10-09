@@ -133,7 +133,6 @@ Compute_Push_Constants :: struct {
 Compute_Effect_Kind :: enum {
     Gradient,
     Sky,
-    Buffer,
 }
 
 Compute_Effect :: struct {
@@ -235,6 +234,7 @@ engine_run :: proc(self: ^Engine) -> (ok: bool) {
 
         timer_tick(&t)
         engine_ui_definition(self)
+        shader_manager_update(&self.shader_manager, self)
         game_manager_update(&self.game_manager, self)
         game_manager_game_update(&self.game_manager, &self.scene, self, f32(t.delta_time))
         engine_draw(self) or_return
