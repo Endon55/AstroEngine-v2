@@ -170,6 +170,8 @@ spawn_game_compiler_thread :: proc(self: ^Game_Manager) ->(ok:bool) {
 @(private="file")
 game_compiler_thread_proc :: proc(data: rawptr) {
 
+    context.allocator = runtime.heap_allocator()
+    context.logger = g_logger
     args := cast(^Project_Compiler_Worker_Args)data
     build_status_pipe := &args.build_status_pipe
     thread_status_pipe := &args.thread_status_pipe
@@ -371,6 +373,7 @@ compile_library :: proc(self: ^Project) -> (ok: bool) {
         "-define:GLFW_SHARED=false",
     }, context.allocator) or_return
 
+    log.debugf("Library Compiled")
     return true
 }
 
