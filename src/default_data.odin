@@ -83,15 +83,13 @@ engine_init_default_data :: proc(self: ^Engine) -> (ok: bool) {
         &self.scene.materials, self.default_material_data,
     )
     writer: Descriptor_Writer
-    descriptor_writer_init(&writer, self.vk_device)
+    descriptor_writer_init(&writer, self.vk_device, &self.single_image_layout)
     descriptor_writer_write_image(
         &writer,
         binding = 0,
         image = self.white_image.image_view,
         sampler = self.default_sampler_linear,
-        layout = .SHADER_READ_ONLY_OPTIMAL,
-        type = .COMBINED_IMAGE_SAMPLER,
-    )
+    ) or_return
     for m, i in self.scene.meshes {
 
         if m.name == "Sphere" {

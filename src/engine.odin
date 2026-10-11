@@ -76,12 +76,11 @@ Engine::struct {
     draw_extent: vk.Extent2D,
     render_scale: f32,
 
-    gradient_pipeline_layout: vk.PipelineLayout,
+    background_layout: Pipeline_Layout,
     background_effects: [Compute_Effect_Kind]Compute_Effect,
     current_background_effect: Compute_Effect_Kind,
     global_descriptor_allocator: Descriptor_Allocator,
     draw_image_descriptors: vk.DescriptorSet,
-    draw_image_descriptor_layout: vk.DescriptorSetLayout,
 
     imm_fence: vk.Fence,
     imm_command_buffer: vk.CommandBuffer,
@@ -93,11 +92,11 @@ Engine::struct {
     error_checkerboard_image: Allocated_Image,
     default_sampler_linear: vk.Sampler,
     default_sampler_nearest: vk.Sampler,
-    single_image_descriptor_layout: vk.DescriptorSetLayout,
+    single_image_layout: Descriptor_Layout,
 
     default_material_data: Material_Instance,
     metal_rough_material: Metallic_Roughness,
-    gpu_scene_data_descriptor_layout: vk.DescriptorSetLayout,
+    scene_layout: Descriptor_Layout,
 
     main_draw_context: Draw_Context,
     name_for_node: map[string]u32,
@@ -111,7 +110,7 @@ Frame_Data :: struct {
     swapchain_semaphore: vk.Semaphore,
     render_fence: vk.Fence,
     deletion_queue: Deletion_Queue,
-    frame_descriptors: Descriptor_Allocator_Growable,
+    frame_descriptors: Descriptor_Allocator,
 }
 
 GPU_Scene_Data :: struct {

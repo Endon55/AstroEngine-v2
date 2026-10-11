@@ -157,67 +157,6 @@ image_subresource_range :: proc(aspectMask: vk.ImageAspectFlags) -> vk.ImageSubr
 	return subImage
 }
 
-descriptorset_layout_binding :: proc(
-	type: vk.DescriptorType,
-	stageFlags: vk.ShaderStageFlags,
-	binding: u32,
-) -> vk.DescriptorSetLayoutBinding {
-	setbind := vk.DescriptorSetLayoutBinding {
-		binding            = binding,
-		descriptorCount    = 1,
-		descriptorType     = type,
-		pImmutableSamplers = nil,
-		stageFlags         = stageFlags,
-	}
-	return setbind
-}
-
-descriptorset_layout_create_info :: proc(
-	bindings: ^vk.DescriptorSetLayoutBinding,
-	bindingCount: u32,
-) -> vk.DescriptorSetLayoutCreateInfo {
-	info := vk.DescriptorSetLayoutCreateInfo {
-		sType        = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		pBindings    = bindings,
-		bindingCount = bindingCount,
-	}
-	return info
-}
-
-write_descriptor_image :: proc(
-	type: vk.DescriptorType,
-	dstSet: vk.DescriptorSet,
-	imageInfo: ^vk.DescriptorImageInfo,
-	binding: u32,
-) -> vk.WriteDescriptorSet {
-	write := vk.WriteDescriptorSet {
-		sType           = .WRITE_DESCRIPTOR_SET,
-		dstBinding      = binding,
-		dstSet          = dstSet,
-		descriptorCount = 1,
-		descriptorType  = type,
-		pImageInfo      = imageInfo,
-	}
-	return write
-}
-
-write_descriptor_buffer :: proc(
-	type: vk.DescriptorType,
-	dstSet: vk.DescriptorSet,
-	bufferInfo: ^vk.DescriptorBufferInfo,
-	binding: u32,
-) -> vk.WriteDescriptorSet {
-	write := vk.WriteDescriptorSet {
-		sType           = .WRITE_DESCRIPTOR_SET,
-		dstBinding      = binding,
-		dstSet          = dstSet,
-		descriptorCount = 1,
-		descriptorType  = type,
-		pBufferInfo     = bufferInfo,
-	}
-	return write
-}
-
 buffer_info :: proc(
 	buffer: vk.Buffer,
 	offset: vk.DeviceSize,

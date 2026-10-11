@@ -47,16 +47,14 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
     scene_uniform_data := cast(^GPU_Scene_Data)gpu_scene_data_buffer.info.pMappedData
     scene_uniform_data^ = self.scene_data
 
-    global_descriptor := descriptor_growable_allocate(&frame.frame_descriptors, &self.gpu_scene_data_descriptor_layout,) or_return
+    global_descriptor := descriptor_allocator_allocate(&frame.frame_descriptors, &self.scene_layout) or_return
 
     writer: Descriptor_Writer
-    descriptor_writer_init(&writer, self.vk_device)
+    descriptor_writer_init(&writer, self.vk_device, &self.scene_layout)
     descriptor_writer_write_buffer(&writer,
         binding = 0,
         buffer = gpu_scene_data_buffer.buffer,
-        size = size_of(GPU_Scene_Data),
-        offset = 0,
-        type = .UNIFORM_BUFFER)
+        size = size_of(GPU_Scene_Data)) or_return
     descriptor_writer_update_set(&writer, global_descriptor)
     for &draw in self.main_draw_context.opaque_surfaces {
         material := &self.scene.materials[draw.material]
@@ -111,9 +109,9 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
 engine_draw_background :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool) {
     effect := &self.background_effects[self.current_background_effect]
    vk.CmdBindPipeline(cmd, .COMPUTE, effect.pipeline)
-   vk.CmdBindDescriptorSets(cmd, .COMPUTE, self.gradient_pipeline_layout, 0, 1, &self.draw_image_descriptors, 0, nil,)
+   vk.CmdBindDescriptorSets(cmd, .COMPUTE, self.background_layout.handle, 0, 1, &self.draw_image_descriptors, 0, nil,)
 
-    vk.CmdPushConstants(cmd, self.gradient_pipeline_layout, {.COMPUTE}, 0, size_of(Compute_Push_Constants), &effect.data,)
+    vk.CmdPushConstants(cmd, self.background_layout.handle, {.COMPUTE}, 0, size_of(Compute_Push_Constants), &effect.data,)
     vk.CmdDispatch(cmd, 
         u32(math.ceil_f32(f32(self.draw_extent.width) / 16.0)), 
         u32(math.ceil_f32(f32(self.draw_extent.height) / 16.0)),
@@ -144,7 +142,7 @@ engine_draw ::proc(self: ^Engine) -> (ok: bool){
     vk_check(vk.ResetFences(self.vk_device, 1, &frame.render_fence)) or_return
 
     deletion_queue_flush(&frame.deletion_queue)
-    descriptor_growable_clear_pools(&frame.frame_descriptors)
+    descriptor_allocator_clear(&frame.frame_descriptors)
 
     swapchain_image_index: u32 = ---
     result := vk.AcquireNextImageKHR(self.vk_device, self.vk_swapchain, 1e9, frame.swapchain_semaphore, 0, &swapchain_image_index,)

@@ -19,6 +19,8 @@ Resource :: union {
 
     vk.DescriptorPool,
     vk.DescriptorSetLayout,
+    Descriptor_Layout,
+    Pipeline_Layout,
 
     vk.ImageView,
     vk.Sampler,
@@ -35,7 +37,6 @@ Resource :: union {
     Allocated_Image,
     Allocated_Buffer,
 
-    Descriptor_Allocator_Growable,
     Metallic_Roughness,
     Material_Shader,
 
@@ -120,8 +121,10 @@ Resource :: union {
                 destroy_buffer(res)
             case vma.Allocator:
                 vma.DestroyAllocator(res)
-            case Descriptor_Allocator_Growable:
-                descriptor_growable_destroy_pools(res)
+            case Descriptor_Layout:
+                descriptor_layout_destroy(res)
+            case Pipeline_Layout:
+                pipeline_layout_destroy(res)
             case Metallic_Roughness:
                 metallic_roughness_clear_resources(res)
             case Material_Shader:

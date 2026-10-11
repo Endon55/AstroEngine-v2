@@ -402,155 +402,71 @@ engine_immediate_submit :: proc(self: ^Engine, data: $T,
 }
 
 engine_init_descriptors:: proc(self: ^Engine) -> (ok:bool) {
-    sizes := []Pool_Size_Ratio{
-        {.STORAGE_IMAGE, 1},
-        {.UNIFORM_BUFFER, 1},
-        {.COMBINED_IMAGE_SAMPLER, 2},
-    }
+    // Pools size themselves from the layouts they allocate, so there is no ratio table to maintain.
+    descriptor_allocator_init(&self.global_descriptor_allocator, self.vk_device, 64)
 
-    descriptor_allocator_init_pool(&self.global_descriptor_allocator, self.vk_device, 10, sizes) or_return
-    deletion_queue_push(&self.main_deletion_queue, self.global_descriptor_allocator.pool)
+    descriptor_layout_init(&self.scene_layout, self.vk_device, "Scene Data")
+    descriptor_layout_add(&self.scene_layout, 0, .UNIFORM_BUFFER, {.VERTEX, .FRAGMENT})
+    descriptor_layout_build(&self.scene_layout) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.scene_layout)
 
-    {
-        builder: Descriptor_Layout_Builder
-        descriptor_layout_builder_init(&builder, self.vk_device)
-        descriptor_layout_builder_add_binding(&builder, 0, .STORAGE_IMAGE)
-        self.draw_image_descriptor_layout = descriptor_layout_builder_build(&builder, {.COMPUTE}) or_return
-
-        deletion_queue_push(&self.main_deletion_queue, self.draw_image_descriptor_layout)
-    }
-
-    self.draw_image_descriptors = descriptor_allocator_allocate(
-        &self.global_descriptor_allocator,
-        self.vk_device,
-        &self.draw_image_descriptor_layout,
-        ) or_return
-   
-    writer: Descriptor_Writer
-    descriptor_writer_init(&writer, self.vk_device)
-
-    descriptor_writer_write_image(
-        &writer,
-        binding = 0,
-        image = self.draw_image.image_view,
-        sampler = 0,
-        layout = .GENERAL,
-        type = .STORAGE_IMAGE,)
-
-    descriptor_writer_update_set(&writer, self.draw_image_descriptors)
+    descriptor_layout_init(&self.single_image_layout, self.vk_device, "Single Image")
+    descriptor_layout_add(&self.single_image_layout, 0, .COMBINED_IMAGE_SAMPLER, {.FRAGMENT})
+    descriptor_layout_build(&self.single_image_layout) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.single_image_layout)
 
     for &frame in self.frames {
-        frame_sizes: Ratios
-        append(&frame_sizes, Pool_Size_Ratio{.STORAGE_IMAGE, 3})
-        append(&frame_sizes, Pool_Size_Ratio{.STORAGE_BUFFER, 3})
-        append(&frame_sizes, Pool_Size_Ratio{.UNIFORM_BUFFER, 3})
-        append(&frame_sizes, Pool_Size_Ratio{.COMBINED_IMAGE_SAMPLER, 4}) 
-
-        descriptor_growable_init(
-        &frame.frame_descriptors,
-        self.vk_device,
-        1000,
-        frame_sizes[:],
-        )
-
-        deletion_queue_push(&self.main_deletion_queue, frame.frame_descriptors)
-    }
-
-    {
-        builder: Descriptor_Layout_Builder
-        descriptor_layout_builder_init(&builder, self.vk_device)
-        descriptor_layout_builder_add_binding(&builder, 0, .UNIFORM_BUFFER)
-        self.gpu_scene_data_descriptor_layout = descriptor_layout_builder_build(
-            &builder, {.VERTEX, .FRAGMENT}
-        ) or_return
-
-        deletion_queue_push(&self.main_deletion_queue, self.gpu_scene_data_descriptor_layout)
-    }
-
-    {
-        builder: Descriptor_Layout_Builder
-        descriptor_layout_builder_init(&builder, self.vk_device)
-        descriptor_layout_builder_add_binding(&builder, 0, .COMBINED_IMAGE_SAMPLER)
-        self.single_image_descriptor_layout = descriptor_layout_builder_build(&builder, {.FRAGMENT}) or_return
-        deletion_queue_push(&self.main_deletion_queue, self.single_image_descriptor_layout)
+        descriptor_allocator_init(&frame.frame_descriptors, self.vk_device, 1000, {&self.scene_layout})
     }
 
     return true
 }
+
 engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
 
-    gradient_comp :Shader = shader_manager_get_shader(&self.shader_manager,"engine/gradient_color.comp") or_return
+    pipeline_layout_init(&self.background_layout, self.vk_device, "Background")
+    pipeline_layout_add_binding(&self.background_layout, 0, 0, .STORAGE_IMAGE, {.COMPUTE})
+    pipeline_layout_add_push_constant(&self.background_layout, Compute_Push_Constants, {.COMPUTE})
+    pipeline_layout_build(&self.background_layout) or_return
+    deletion_queue_push(&self.main_deletion_queue, self.background_layout)
 
+    self.draw_image_descriptors = descriptor_allocator_allocate(
+        &self.global_descriptor_allocator,
+        pipeline_layout_set(&self.background_layout, 0),
+    ) or_return
 
-    GRADIENT_COLOR_SPV := gradient_comp.spirv_bytes 
-    gradient_color_shader := create_shader_module(self.vk_device, GRADIENT_COLOR_SPV) or_return
-    defer vk.DestroyShaderModule(self.vk_device, gradient_color_shader, nil)
-
-    sky_comp :Shader = shader_manager_get_shader(&self.shader_manager, "engine/sky.comp") or_return
-
-    SKY_SPV := sky_comp.spirv_bytes 
-    sky_shader := create_shader_module(self.vk_device, SKY_SPV) or_return
-    defer vk.DestroyShaderModule(self.vk_device, sky_shader, nil)
-
-    stage_info := vk.PipelineShaderStageCreateInfo {
-        sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
-        stage = {.COMPUTE},
-        module = gradient_color_shader,
-        pName = "main",
-    }
-
-    compute_pipeline_create_info := vk.ComputePipelineCreateInfo {
-        sType = .COMPUTE_PIPELINE_CREATE_INFO,
-        layout = self.gradient_pipeline_layout,
-        stage = stage_info,
-    }
+    writer: Descriptor_Writer
+    descriptor_writer_init(&writer, self.vk_device, pipeline_layout_set(&self.background_layout, 0))
+    descriptor_writer_write_image(&writer, 0, self.draw_image.image_view) or_return
+    descriptor_writer_update_set(&writer, self.draw_image_descriptors)
 
     gradient_color := Compute_Effect {
-        layout = self.gradient_pipeline_layout,
+        layout = self.background_layout.handle,
         name = "Gradient Color",
         data = {data1 = {1, 0, 0, 1}, data2 = {0, 0, 1, 1}}
     }
-
-    vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &compute_pipeline_create_info, nil, &gradient_color.pipeline,),) or_return
-
-    compute_pipeline_create_info.stage.module = sky_shader
+    gradient_color.pipeline = engine_create_compute_pipeline(self, "engine/gradient_color.comp") or_return
+    defer if !ok { vk.DestroyPipeline(self.vk_device, gradient_color.pipeline, nil) }
 
     sky := Compute_Effect {
-        layout = self.gradient_pipeline_layout,
+        layout = self.background_layout.handle,
         name = "Sky",
         data = {data1 = {0.1, 0.2, 0.4, 0.97}},
     }
-    
-    vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &compute_pipeline_create_info, nil, &sky.pipeline),) or_return
+    sky.pipeline = engine_create_compute_pipeline(self, "engine/sky.comp") or_return
 
     self.background_effects[.Gradient] = gradient_color
     self.background_effects[.Sky] = sky
-
-    deletion_queue_push(&self.main_deletion_queue, self.gradient_pipeline_layout)
 
     self.current_background_effect = DEFAULT_BACKGROUND    
 
     return true
 }
 
+// Builds a compute pipeline for the background layout, checking the shader's bindings against it first.
 engine_create_compute_pipeline :: proc(self: ^Engine, shader_name: string, loc :=#caller_location) -> (pipeline: vk.Pipeline, ok: bool) {
     shader_asset := shader_manager_get_shader(&self.shader_manager, shader_name, loc) or_return
-    shader_module := create_shader_module(self.vk_device, shader_asset.spirv_bytes) or_return
-    defer vk.DestroyShaderModule(self.vk_device, shader_module, nil)
-
-    stage := vk.PipelineShaderStageCreateInfo {
-        sType = .PIPELINE_SHADER_STAGE_CREATE_INFO,
-        stage = {.COMPUTE},
-        module = shader_module,
-        pName = "main",
-    }
-    create_info := vk.ComputePipelineCreateInfo {
-        sType = .COMPUTE_PIPELINE_CREATE_INFO,
-        layout = self.gradient_pipeline_layout,
-        stage = stage,
-    }
-    vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &create_info, nil, &pipeline)) or_return
-    return pipeline, true
+    return compute_pipeline_create(self.vk_device, &self.background_layout, shader_asset.spirv_bytes, shader_name)
 }
 
 engine_build_pipelines :: proc(self: ^Engine) -> (ok: bool) {
@@ -594,22 +510,7 @@ engine_build_pipelines :: proc(self: ^Engine) -> (ok: bool) {
 }
 
 engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) { 
-    
-    push_constant := vk.PushConstantRange {
-        offset = 0,
-        size = size_of(Compute_Push_Constants),
-        stageFlags = {.COMPUTE}
-    } 
 
-    compute_layout := vk.PipelineLayoutCreateInfo {
-        sType = .PIPELINE_LAYOUT_CREATE_INFO,
-        pSetLayouts = &self.draw_image_descriptor_layout,
-        setLayoutCount = 1,
-        pPushConstantRanges = &push_constant,
-        pushConstantRangeCount = 1,
-    }
-
-    vk_check(vk.CreatePipelineLayout(self.vk_device, &compute_layout, nil, & self.gradient_pipeline_layout), "Failed to create pipeline layout") or_return
     log.debugf("---Background Pipelines")
     engine_init_background_pipelines(self) or_return
     log.debugf("---Metalic Pipelines")
@@ -809,6 +710,7 @@ engine_cleanup :: proc(self: ^Engine) {
     delete(self.name_for_node)
 
     for &frame in self.frames {
+        descriptor_allocator_destroy(&frame.frame_descriptors)
         vk.DestroyCommandPool(self.vk_device, frame.command_pool, nil)
 
         vk.DestroyFence(self.vk_device, frame.render_fence, nil)
@@ -818,6 +720,7 @@ engine_cleanup :: proc(self: ^Engine) {
     }
     
     deletion_queue_destroy(&self.main_deletion_queue)
+    descriptor_allocator_destroy(&self.global_descriptor_allocator)
     engine_destroy_swapchain(self)
 
     vk.DestroySurfaceKHR(self.vk_instance, self.vk_surface, nil)
