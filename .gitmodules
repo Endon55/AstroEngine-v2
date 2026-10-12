@@ -13,3 +13,6 @@
 [submodule "libs/glfw"]
 	path = libs/glfw
 	url = https://github.com/glfw/glfw
+[submodule "libs/spirv-reflect/SPIRV-Reflect"]
+	path = libs/spirv-reflect/SPIRV-Reflect
+	url = git@github.com:KhronosGroup/SPIRV-Reflect.git

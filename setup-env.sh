@@ -12,11 +12,13 @@
 
 
 if [ "$(id -u)" -ne 0 ]; then
-    echo "Run as root(add 'sudo' before this script name)"
-    exit 1
+    #echo "Run as root(add 'sudo' before this script name)"
+    exec sudo /bin/bash "$0" "$@"
+    #exit 1
 fi
 
 
+clang_version="20"
 project_dir=$(pwd)
 src="/usr/local/src"
 bin="/usr/local/bin"
@@ -29,7 +31,7 @@ cd /usr/local/
 echo "libs $libs"
 mkdir -p src
 echo "Setting up environment"
-sudo apt install llvm-20 clang python3-venv python3-pip libwayland-dev libxkbcommon-dev xorg-dev libvulkan-dev vulkan-tools vulkan-validationlayers spirv-tools libvulkan1 mesa-vulkan-drivers
+sudo apt install  libclang-$clang_version-dev python3-venv python3-pip libwayland-dev libxkbcommon-dev xorg-dev libvulkan-dev vulkan-tools vulkan-validationlayers spirv-tools libvulkan1 mesa-vulkan-drivers
 
 cd $src
 if [ ! -e "$src/odin" ]; then
@@ -92,6 +94,29 @@ if [ ! -e $bin/premake5 ]; then
     ln -s $src/premake/bin/release/premake5 $bin 
 fi
 
+
+cd $src
+if [ ! -e "$src/odin-bindgen" ]; then
+    echo "Downloading odin binding generator"
+    sudo git clone https://github.com/karl-zylinski/odin-c-bindgen.git odin-bindgen
+fi
+
+bindgen_path="$src/odin-bindgen/bindgen"
+if [ ! -e $bindgen_path ]; then
+    echo "Building odin binding generator"
+    cd odin-bindgen
+
+    odin build src -out:bindgen -extra-linker-flags:"-L/usr/lib/llvm-$clang_version/lib/"
+
+fi
+if [ ! -e $bin/bindgen ]; then
+    echo "Adding odin binding generator to path"
+    
+    ln -s $bindgen_path $bin 
+fi
+
+
+
 source $home/.bashrc
 
 cd $project_dir/libs
@@ -151,6 +176,31 @@ if [[ ! -e $src/odin/vendor/cgltf/lib/cgltf.a ]]; then
     
     ./build_cgltf.sh
 fi
+spirv_reflect=$libs/spirv-reflect
+cd $libs/spirv-reflect
+
+if [[ ! -e $spirv_reflect/SPIRV-Reflect/build/libspirv-reflect-static.a ]]; then
+    echo "Building SPIRV-Reflect binary"
+    cd "SPIRV-Reflect"
+   # mkdir build 
+   cmake -B build -D SPIRV_REFLECT_EXECUTABLE=OFF -D SPIRV_REFLECT_STATIC_LIB=ON 
+   cmake --build build
+
+fi
+
+
+if [[ ! -e $spirv_reflect/libspirv-reflect.a ]]; then
+    echo "Moving SPIRV-Reflect binary"
+    
+    ln -s "$spirv_reflect/SPIRV-Reflect/build/libspirv-reflect-static.a" "$spirv_reflect/libspirv-reflect.a"
+fi
+
+
+bindgen bindgen.sjson
+
+
+
+
 
 su -u "$SUDO_USER"
 cd $project_dir

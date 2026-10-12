@@ -152,7 +152,12 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
         },
     }
     features.device_extensions = make([dynamic]cstring, context.allocator)
-    append(&features.device_extensions, vk.KHR_SWAPCHAIN_EXTENSION_NAME, vk.KHR_PIPELINE_LIBRARY_EXTENSION_NAME, vk.EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME)
+    append(&features.device_extensions,
+        vk.KHR_SWAPCHAIN_EXTENSION_NAME,
+        vk.KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
+        vk.EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME,
+        vk.EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
+        )
     log.debugf("---Creating Instance")
     create_vk_instance(&self.vk_context, features, self) or_return
     self.vk_instance = self.vk_context.vk_instance

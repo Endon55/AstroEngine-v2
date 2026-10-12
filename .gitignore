@@ -1,8 +1,13 @@
-src.bin
-Astro.bin
-Astro2.bin
+imgui.ini
+perf.data
 /.linker_libs
 /.vscode
 /shaders/compiled/
 /build/assets/
 /game
+*.a
+*.bin
+*.so
+*.rdi
+
+
