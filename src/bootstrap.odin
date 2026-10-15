@@ -20,6 +20,7 @@ Vulkan_Creation_Context::struct {
     allocation_callbacks: ^vk.AllocationCallbacks,
     vk_surface: vk.SurfaceKHR,
     swapchain_context: Swapchain_Context,
+    api_version: u32,
 }
 
 Swapchain_Context::struct {
@@ -75,7 +76,7 @@ create_vk_instance :: proc(self: ^Vulkan_Creation_Context, feature_requirements:
    //required to load the function pointer addresses
     vk.load_proc_addresses_global(rawptr(glfw.GetInstanceProcAddress))
     assert(vk.CreateInstance != nil)
-
+    self.api_version = vk.MAKE_API_VERSION(1, 4, 0, 0) 
 
     self.debug_message_severity = {.WARNING, .ERROR}
     self.debug_message_type = {.GENERAL, .VALIDATION, .PERFORMANCE}
@@ -83,10 +84,10 @@ create_vk_instance :: proc(self: ^Vulkan_Creation_Context, feature_requirements:
     app_info := vk.ApplicationInfo {
         sType = .APPLICATION_INFO,
         pApplicationName = "Astro",
-        applicationVersion = vk.MAKE_API_VERSION(1, 4, 0, 0),
+        applicationVersion = self.api_version,
         pEngineName = "Astro",
-        engineVersion = vk.MAKE_API_VERSION(1, 4, 0, 0),
-        apiVersion = vk.API_VERSION_1_4,
+        engineVersion = self.api_version,
+        apiVersion = self.api_version,
     }
     
     glfw_extensions:= glfw.GetRequiredInstanceExtensions()
@@ -121,6 +122,7 @@ create_vk_instance :: proc(self: ^Vulkan_Creation_Context, feature_requirements:
 
     //load the remaining addresses
     vk.load_proc_addresses(self.vk_instance)
+
 
     when ODIN_DEBUG {
         log.debugf("---Adding debug callback to Vulkan")

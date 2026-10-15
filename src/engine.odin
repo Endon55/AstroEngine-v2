@@ -10,9 +10,7 @@ import vk "vendor:vulkan"
 
 import "libs:vkb"
 import vma "libs:vma"
-import im "libs:imgui"
-import im_glfw "libs:imgui/backends/glfw"
-import im_vk "libs:imgui/backends/vulkan"
+
 
 TITLE :: "Astro Engine v2"
 DEFAULT_WINDOW_EXTENT :: vk.Extent2D{1280, 678}
@@ -20,6 +18,7 @@ DEFAULT_BACKGROUND :: Compute_Effect_Kind(.Sky)
 FRAME_OVERLAP :: 2
 DEFAULT_ALLOCATOR : runtime.Allocator
 ENGINE_ALLOCATOR : runtime.Allocator
+
 /*
     Engine remaps the coordinate space to something more understandable as a lay-person such as the dumbass coding this.
     forward(+) backward(-) exist on the y-axis,
@@ -43,13 +42,7 @@ Engine::struct {
     vk_physical_device: vk.PhysicalDevice,
     vk_surface: vk.SurfaceKHR,
     vk_device: vk.Device,
-    
-    vkb: struct{
-        instance: vkb.Instance,
-        physical_device: vkb.Physical_Device,
-        device: vkb.Device,
-        swapchain: vkb.Swapchain,
-    },
+
     vk_context: Vulkan_Creation_Context,
 
     vk_swapchain: vk.SwapchainKHR,

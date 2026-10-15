@@ -1,7 +1,8 @@
 inputs = [
-    "SPIRV-Reflect"
+    "SPIRV-Reflect",
+    "SPIRV-Reflect/include/spirv/unified1"
 ]
 
 output_folder = "../spirv-reflect"
 import_lib = "libspirv-reflect.a"
-package_name = "spirv-reflect"
+package_name = "spirv"

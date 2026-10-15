@@ -550,6 +550,7 @@ game_manager_game_draw_ui :: proc(self: ^Game_Manager, scene: ^Scene, engine: ^E
 }
 
 game_manager_game_build_pipelines :: proc(self: ^Game_Manager, scene: ^Scene, engine: ^Engine) -> (ok: bool) {
+    log.infof("Building Pipelines")
     if self.library.api.build_pipelines == nil {
         return true
     }

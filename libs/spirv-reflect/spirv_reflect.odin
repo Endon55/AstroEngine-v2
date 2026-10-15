@@ -28,7 +28,7 @@ VERSION HISTORY
  @file spirv_reflect.h
 
 */
-package spirv-reflect
+package spirv
 
 import "core:c"
 

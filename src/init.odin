@@ -6,7 +6,6 @@ import "core:mem"
 
 import "vendor:glfw"
 import vk "vendor:vulkan"
-import la "core:math/linalg"
 import im "libs:imgui"
 import im_glfw "libs:imgui/backends/glfw"
 import im_vk "libs:imgui/backends/vulkan"
@@ -179,8 +178,16 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
     deletion_queue_init(&self.main_deletion_queue, self.vk_device)
 
 
-    vma_vulkan_functions := vma.create_vulkan_functions()
-    api_version := min(self.vkb.instance.api_version, self.vkb.physical_device.vk_properties.apiVersion)
+    engine_init_vma(self) or_return
+
+    return true 
+}
+
+engine_init_vma :: proc(self: ^Engine,) -> (ok:bool) {
+
+    device_vtable: vk.Device_VTable
+    vk.load_proc_addresses_device_vtable(self.vk_device, &device_vtable)
+    vma_vulkan_functions := vma.create_device_vulkan_functions(device_vtable)
 
 
     vma_create_info: vma.AllocatorCreateInfo = {
@@ -189,15 +196,13 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
         physicalDevice = self.vk_physical_device,
         device = self.vk_device,
         pVulkanFunctions = &vma_vulkan_functions,
-        vulkanApiVersion = api_version,
+        vulkanApiVersion = vk.API_VERSION_1_4,
     }
 
-
-    vk_check(vma.CreateAllocator(vma_create_info, &self.vma_allocator)) or_return
-
+    vk_check(vma.CreateAllocator(vma_create_info, &self.vma_allocator), "Failed to create VMA Allocator") or_return
     deletion_queue_push(&self.main_deletion_queue, self.vma_allocator)
 
-    return true 
+    return true
 }
 
 engine_create_swapchain :: proc(self: ^Engine, extent: vk.Extent2D) -> (ok: bool) {
@@ -653,7 +658,7 @@ engine_init_imgui :: proc(self: ^Engine) -> (ok: bool) {
     }
 
     init_info := im_vk.InitInfo {
-        ApiVersion = self.vkb.instance.api_version,
+        ApiVersion = self.vk_context.api_version,
         Instance = self.vk_instance,
         PhysicalDevice = self.vk_physical_device,
         Device = self.vk_device,
@@ -665,7 +670,7 @@ engine_init_imgui :: proc(self: ^Engine) -> (ok: bool) {
         PipelineInfoMain = pipeline_info,
     }
 
-    im_vk.LoadFunctions(self.vkb.instance.api_version, proc "c" (function_name: cstring, user_data: rawptr) -> vk.ProcVoidFunction {
+    im_vk.LoadFunctions(self.vk_context.api_version, proc "c" (function_name: cstring, user_data: rawptr) -> vk.ProcVoidFunction {
         engine := cast(^Engine)user_data
         return vk.GetInstanceProcAddr(engine.vk_instance, function_name)
     }, self,) or_return

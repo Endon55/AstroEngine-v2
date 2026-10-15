@@ -125,7 +125,7 @@ create_buffer :: proc(self: ^Engine, alloc_size: vk.DeviceSize, usage: vk.Buffer
 
     vma_alloc_info := vma.AllocationCreateInfo {
         usage = memory_usage,
-        flags = {.MAPPED},
+        flags = {.MAPPED, .DEDICATED_MEMORY},
     }
     new_buffer.allocator = self.vma_allocator
 
