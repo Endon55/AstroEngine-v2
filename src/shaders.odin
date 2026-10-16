@@ -10,6 +10,7 @@ import "core:thread"
 import "core:sync/chan"
 import "core:mem"
 import "core:hash"
+import "core:math/bits"
 
 import vk "vendor:vulkan"
 import spirv "libs:spirv-reflect"
@@ -503,7 +504,7 @@ Render_Shaders :: struct {
 }
 
 Stage_Params :: struct {
-
+    stage: vk.ShaderStageFlag,
     input_count: u32,
     inputs: []^spirv.SpvReflectInterfaceVariable,
 
@@ -516,7 +517,58 @@ Compute_Shaders :: struct {
     compute: Shader,
 }
 
+@(private="file")
+validate_input_outputs :: proc(stage_params:^[dynamic]Stage_Params) ->(ok:bool,) {
+    count:= len(stage_params)
+    if count == 0 || count == 1 {
+        return true
+    }
+    for i in 0..<count -1 {
+        current:= stage_params[i]
+        next:= stage_params[i + 1]
+        found: bool
+        for output_index in 0..< current.output_count {
+            output := current.outputs[output_index]
+            if output.built_in != -1 || output.location == bits.U32_MAX do continue
+
+            for input_index in 0..< next.input_count {
+                input := next.inputs[input_index]
+
+                if input.built_in != -1 || input.location == bits.U32_MAX do continue
+
+                //They share a location
+                if output.location == input.location {
+                    //now check if the types are the same.
+                    if output.format != input.format {
+                        log.errorf("Formats don't match. Output(%v): %v, Input(%v): %v", current.stage, output.format, next.stage, input.format)
+
+                        if (output.type_description != nil && output.type_description.op == spirv.SpvOp.TypeArray) || (input.type_description != nil && input.type_description.op == spirv.SpvOp.TypeArray) {
+                            log.errorf("Ive got more info about out outputs/inputs and it's terminal. One of them is an array and we haven't implemented stripping that out yet. Godspeed homie.")
+                        }
+
+                        return false
+                    }
+                    else {
+                        log.debugf("Found the binding Output(%v) -> Input(%v) at location(%v) is type: %v", current.stage, next.stage, output.location, output.format)
+                        found = true
+                    }
+                    break
+                }
+            }
+            if !found {
+                log.errorf("Stage %v output at location %v doesn't have an equal location in Stage %v", current.stage, output.location, next.stage)
+                return false
+            }
+
+        }            
+
+
+    }
+    return true
+}
+
 shaders_generate_layout_raw :: proc(layout:^map[u32]map[u32]vk.DescriptorSetLayoutBinding, push_constants_ranges :^[dynamic]vk.PushConstantRange, shader: Shader) -> (stage_params: Stage_Params, ok:bool,) {
+    log.debugf("----------------------------------------------------")
     log.debugf("Parsing Shader: %v", shader.name)
     data_len: uint = len(shader.spirv_bytes)        
     stage := shader.stage
@@ -531,6 +583,7 @@ shaders_generate_layout_raw :: proc(layout:^map[u32]map[u32]vk.DescriptorSetLayo
     binding_count:u32
     spirv.spvReflectEnumerateDescriptorBindings(&module, &binding_count, nil)
     bindings := make([]^spirv.SpvReflectDescriptorBinding, binding_count)
+    defer delete(bindings)
     spirv.spvReflectEnumerateDescriptorBindings(&module, &binding_count, raw_data(bindings))
 
     spirv.spvReflectEnumerateInputVariables(&module, &stage_params.input_count, nil)
@@ -544,14 +597,16 @@ shaders_generate_layout_raw :: proc(layout:^map[u32]map[u32]vk.DescriptorSetLayo
     push_constants_count: u32
     spirv. spvReflectEnumeratePushConstantBlocks(&module, &push_constants_count, nil)
     push_constants := make([]^spirv.SpvReflectBlockVariable, push_constants_count)
+    defer delete(push_constants)
     spirv.spvReflectEnumeratePushConstantBlocks(&module, &push_constants_count, raw_data(push_constants))
-
-    log.info("--------Inputs----------")
-    print_inputs(stage_params.inputs, stage_params.input_count, 0)
-
-    log.info("--------Outputs----------")
-    print_inputs(stage_params.outputs, stage_params.output_count, 0)
-
+    //
+    //
+    // log.info("--------Inputs----------")
+    // print_inputs(stage_params.inputs, stage_params.input_count, 0)
+    //
+    // log.info("--------Outputs----------")
+    // print_inputs(stage_params.outputs, stage_params.output_count, 0)
+    //
     for binding, index in bindings {
         
         if binding.set not_in layout^ {
@@ -594,20 +649,20 @@ shaders_generate_layout_raw :: proc(layout:^map[u32]map[u32]vk.DescriptorSetLayo
         }
         append(push_constants_ranges, push_constants_range)
     }
-
+    stage_params.stage = stage
     return stage_params, true
 }
 
 print_inputs :: proc(inputs: []^spirv.SpvReflectInterfaceVariable, count: u32, levels: u32) {
     for i in 0..<count {
         input := inputs[i]
+        if input.built_in != -1 || input.location == bits.U32_MAX do continue
         log.infof("Input ID: %v", input.spirv_id)
         log.infof(" Name: %v", input.name)
         log.infof(" Component : %v", input.component)
         log.infof(" Location:   %v", input.location)
         log.infof(" StorageClass: %v", input.storage_class)
         log.infof(" Semantic: %v", input.semantic)
-
         log.infof(" Offset: %v", input.word_offset.location)
         log.infof(" Format: %v", input.format)
 
@@ -623,20 +678,22 @@ shaders_generate_layout_render:: proc(vk_device: vk.Device, render_shaders: Rend
 
     layout := make(map[u32]map[u32]vk.DescriptorSetLayoutBinding)
     push_constants_ranges := make([dynamic]vk.PushConstantRange)
-    
+    stage_params := make([dynamic]Stage_Params) 
     if render_shaders.vertex.name != "" && render_shaders.vertex.stage != .VERTEX {
         log.errorf("Invalid Vertex Shader")
         return pipeline_layout, false
     }
     else {
-        shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.vertex) or_return
+        parms := shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.vertex) or_return
+        append(&stage_params, parms)
     }
     if render_shaders.fragment.name != "" && render_shaders.fragment.stage != .FRAGMENT {
         log.errorf("Invalid Fragment Shader")
         return pipeline_layout, false
     }
     else {
-        shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.fragment) or_return
+        parms := shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.fragment) or_return
+        append(&stage_params, parms)
     }
     if render_shaders.tessellation_control.name != "" {
         if render_shaders.tessellation_control.stage != .TESSELLATION_CONTROL {
@@ -644,7 +701,8 @@ shaders_generate_layout_render:: proc(vk_device: vk.Device, render_shaders: Rend
             return pipeline_layout, false
         }   
         else {
-            shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.tessellation_control) or_return
+            parms := shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.tessellation_control) or_return
+            append(&stage_params, parms)
         }
         //Evaluation Shaders are required if you have a Control shader
         if render_shaders.tessellation_evaluation.name == "" || render_shaders.tessellation_evaluation.stage != .TESSELLATION_EVALUATION {
@@ -652,7 +710,8 @@ shaders_generate_layout_render:: proc(vk_device: vk.Device, render_shaders: Rend
             return pipeline_layout, false
         }   
         else {
-            shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.tessellation_evaluation) or_return
+            parms:=shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.tessellation_evaluation) or_return
+            append(&stage_params, parms)
         }
     }
     if render_shaders.geometry.name != "" {
@@ -661,11 +720,25 @@ shaders_generate_layout_render:: proc(vk_device: vk.Device, render_shaders: Rend
             return pipeline_layout, false
         }
         else {
-            shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.geometry) or_return
+            parms:= shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.geometry) or_return
+            append(&stage_params, parms)
         }
     }
+    validate_input_outputs(&stage_params) or_return
+    vk_layout :=  generate_from_raw(vk_device, &layout, &push_constants_ranges) or_return
 
-    return generate_from_raw(vk_device, &layout, &push_constants_ranges)
+    for key, &value in layout {
+        delete(value)
+    }
+    delete(layout)
+    delete(push_constants_ranges)
+    for params in stage_params {
+        delete(params.inputs)
+        delete(params.outputs)
+    }
+    delete(stage_params)
+
+    return vk_layout, true
 }
 
 shaders_generate_layout_compute :: proc(vk_device: vk.Device, compute_shaders: Compute_Shaders) ->(pipeline_layout: vk.PipelineLayout, ok:bool,) {
@@ -679,20 +752,31 @@ shaders_generate_layout_compute :: proc(vk_device: vk.Device, compute_shaders: C
         layout := make(map[u32]map[u32]vk.DescriptorSetLayoutBinding)
         push_constants_ranges := make([dynamic]vk.PushConstantRange)
 
-        _ = shaders_generate_layout_raw(&layout, &push_constants_ranges, compute_shaders.compute) or_return
+        params := shaders_generate_layout_raw(&layout, &push_constants_ranges, compute_shaders.compute) or_return
+        defer delete(params.inputs)
+        defer delete(params.outputs)
 
-        return generate_from_raw(vk_device, &layout, &push_constants_ranges)
+        vk_layout :=  generate_from_raw(vk_device, &layout, &push_constants_ranges) or_return
+    for key, &value in layout {
+        delete(value)
+    }
+    delete(layout)
+    delete(push_constants_ranges)
+
+    return vk_layout, true
 }
 
 @(private="file")
 generate_from_raw :: proc(vk_device: vk.Device, layout:^map[u32]map[u32]vk.DescriptorSetLayoutBinding, push_constants_ranges :^[dynamic]vk.PushConstantRange,) ->(pipeline_layout:vk.PipelineLayout, ok:bool,) {
 
     set_layouts := make([]vk.DescriptorSetLayout, len(layout))
+    defer delete(set_layouts)
     bind_index: u32
     set_index: u32
     for set, binding_layouts in layout {
         bind_index = 0
         bindings := make([]vk.DescriptorSetLayoutBinding, len(binding_layouts))
+        defer delete(bindings)
         for binding, layout in binding_layouts {
             bindings[bind_index] = layout
             bind_index += 1

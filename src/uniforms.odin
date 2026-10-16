@@ -45,6 +45,8 @@ shader_pipeline_builder_init :: proc(self: ^Shader_Pipeline_Builder, device: vk.
 
 shader_pipeline_builder_set_shaders :: proc(self: ^Shader_Pipeline_Builder, astro_shaders: Astro_Shaders, loc:=#caller_location){
     ok: bool
+
+
     switch shaders in astro_shaders {
     case Render_Shaders:
         self.pipeline_layout, ok = shaders_generate_layout_render(self.vk_device, shaders) 
