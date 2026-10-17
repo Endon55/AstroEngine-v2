@@ -178,30 +178,13 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
     deletion_queue_init(&self.main_deletion_queue, self.vk_device)
 
 
+    memory_manager_init(&self.memory_manager, self) or_return
     engine_init_vma(self) or_return
-
     return true 
 }
 
 engine_init_vma :: proc(self: ^Engine,) -> (ok:bool) {
-
-    device_vtable: vk.Device_VTable
-    vk.load_proc_addresses_device_vtable(self.vk_device, &device_vtable)
-    vma_vulkan_functions := vma.create_device_vulkan_functions(device_vtable)
-
-
-    vma_create_info: vma.AllocatorCreateInfo = {
-        flags = {.BUFFER_DEVICE_ADDRESS},
-        instance = self.vk_instance,
-        physicalDevice = self.vk_physical_device,
-        device = self.vk_device,
-        pVulkanFunctions = &vma_vulkan_functions,
-        vulkanApiVersion = vk.API_VERSION_1_4,
-    }
-
-    vk_check(vma.CreateAllocator(vma_create_info, &self.vma_allocator), "Failed to create VMA Allocator") or_return
-    deletion_queue_push(&self.main_deletion_queue, self.vma_allocator)
-
+    self.vma_allocator = self.memory_manager.vma_allocator
     return true
 }
 

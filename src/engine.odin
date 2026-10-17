@@ -61,6 +61,7 @@ Engine::struct {
     main_deletion_queue: Deletion_Queue,
 
     input: Input,
+    memory_manager: Memory_Manager,
     shader_manager: Shader_Manager,
     game_manager: Game_Manager,
 

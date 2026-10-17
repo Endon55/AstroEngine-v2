@@ -20,14 +20,25 @@ import spirv "libs:spirv-reflect"
     IMPORTANT: Bindings are shared for each stage in the pipeline, and you must specify which stage pieces of data will be used for. So if we had set0,binding0 and stored a view matrix, 16 32bit floats or 64 bytes. We would have to specify that the Vertex shader wants that matrix. The fragment shader doesn't care at all about the view matrix but it does want some color data. It cannot try to bind that data to set0,binding0 because its already in use, if it does then it will recieve the view matrix but reinterprit those 64 bytes as some color data instead.
     So we should instead use set0,binding1 to store the color data.
 */
+
 Shader_Pipeline_Builder :: struct {
     vk_device: vk.Device,
     shaders: Astro_Shaders,
     pipeline_layout: vk.PipelineLayout,
+    memory_manager: ^Memory_Manager,
+}
+Shader_Pipeline :: struct {
+    vk_device: vk.Device,
+    pipeline_layout: vk.PipelineLayout,
 }
 
-shader_pipeline_builder_init :: proc(self: ^Shader_Pipeline_Builder, device: vk.Device) -> (ok:bool) {
+Bind_Data :: struct {
+
+}
+
+shader_pipeline_builder_init :: proc(self: ^Shader_Pipeline_Builder, memory_manager:^Memory_Manager, device: vk.Device) -> (ok:bool) {
     self.vk_device = device
+    self.memory_manager = memory_manager
     alloc_size: vk.DeviceSize = 50;
     buffer_info := vk.BufferCreateInfo {
         sType = .BUFFER_CREATE_INFO,
@@ -46,7 +57,6 @@ shader_pipeline_builder_init :: proc(self: ^Shader_Pipeline_Builder, device: vk.
 shader_pipeline_builder_set_shaders :: proc(self: ^Shader_Pipeline_Builder, astro_shaders: Astro_Shaders, loc:=#caller_location){
     ok: bool
 
-
     switch shaders in astro_shaders {
     case Render_Shaders:
         self.pipeline_layout, ok = shaders_generate_layout_render(self.vk_device, shaders) 
@@ -58,5 +68,11 @@ shader_pipeline_builder_set_shaders :: proc(self: ^Shader_Pipeline_Builder, astr
         log.errorf("Could not generate the layout for Shaders, %v", loc)
         return
     }
+}
+
+shader_pipeline_builder_bind_data_ptr :: proc(self: ^Shader_Pipeline_Builder, data: ^^$T, set:u32, binding: u32) {
+    mem_ref := memory_manager_bind_uniform(self.memory_manager, size_of(T))
+    assert(mem_ref.pointer != nil, "Got a bad pointer for the uniform")
+    data^ = cast(^T)mem_ref.pointer
 }
 

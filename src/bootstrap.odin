@@ -329,6 +329,7 @@ query_physical_device ::proc(self: ^Physical_Device, surface: vk.SurfaceKHR){
 
     vk.EnumerateDeviceExtensionProperties(self.vk_physical_device, nil, &extension_count, nil)
     self.extensions = make([]vk.ExtensionProperties, extension_count, context.allocator)
+
     vk.EnumerateDeviceExtensionProperties(self.vk_physical_device, nil, &extension_count, raw_data(self.extensions))
 
     queue_family_count: u32
