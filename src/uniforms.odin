@@ -41,10 +41,6 @@ Texture_Binding :: struct {
     reference: Texture_Reference,
 }
 
-
-
-
-
 shader_pipeline_bind :: proc(self: ^Shader_Pipeline, cmd: vk.CommandBuffer) {
 
     vk.CmdBindPipeline(cmd, self.bind_point, self.pipeline)
@@ -181,4 +177,9 @@ shader_pipeline_builder_build :: proc(self: ^Shader_Pipeline_Builder) ->(shader_
 
 
     return shader_pipeline, true
+}
+
+destroy_shader_pipeline :: proc(self:^Shader_Pipeline) {
+   delete(self.texture_bindings)
+   delete(self.uniform_bindings)
 }

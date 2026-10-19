@@ -4,7 +4,6 @@ import "core:os"
 import "core:log"
 import "core:time"
 import "core:strings"
-import "core:strconv"
 import "core:dynlib"
 import "core:mem"
 import "base:runtime"
@@ -72,76 +71,11 @@ Project :: struct {
     asset_dir: string,
     tmp_dir: string,
     library_path: string,
-    cache_path: string,
-    library_up_to_date: bool,
 }
 
-BUILD_CACHE_FILE :: "/.build_cache"
-BUILD_CACHE_HEADER :: "astro_build_cache_v1"
-
-// Cache layout: header line, "<so mtime ns> <so size>" line, then one "<mtime ns> <path>" line per source file.
+// Removes everything in tmp; leftover copies of game.so and their .rdi files no longer match.
 @(private="file")
-build_cache_save :: proc(self: ^Project) -> (ok: bool) {
-    so_info := quick_file_stat(self.library_path, context.temp_allocator) or_return
-
-    builder := strings.builder_make(context.temp_allocator)
-    fmt.sbprintf(&builder, "%v\n%v %v\n", BUILD_CACHE_HEADER, so_info.modification_time._nsec, so_info.size)
-    for path, mod_time in self.src_time_modification_cache {
-        fmt.sbprintf(&builder, "%v %v\n", mod_time._nsec, path)
-    }
-    return save_file_to_disc(self.cache_path, transmute([]byte)strings.to_string(builder))
-}
-
-// Fills src_time_modification_cache and returns true if game.so still matches the cache.
-@(private="file")
-build_cache_load :: proc(self: ^Project) -> (so_matches: bool) {
-    if !os.exists(self.cache_path) || !os.exists(self.library_path) {
-        return false
-    }
-    data := load_file_from_disc(self.cache_path, allocator = context.temp_allocator) or_return
-    lines := strings.split_lines(string(data), context.temp_allocator)
-    if len(lines) < 2 || lines[0] != BUILD_CACHE_HEADER {
-        return false
-    }
-
-    so_fields := strings.split(lines[1], " ", context.temp_allocator)
-    if len(so_fields) != 2 {
-        return false
-    }
-    cached_so_time := strconv.parse_i64(so_fields[0]) or_return
-    cached_so_size := strconv.parse_i64(so_fields[1]) or_return
-
-    for line in lines[2:] {
-        if len(line) == 0 do continue
-        space := strings.index_byte(line, ' ')
-        if space < 0 {
-            clear_build_cache_sources(self)
-            return false
-        }
-        nsec, parsed := strconv.parse_i64(line[:space])
-        if !parsed {
-            clear_build_cache_sources(self)
-            return false
-        }
-        self.src_time_modification_cache[strings.clone(line[space+1:])] = time.Time{_nsec = nsec}
-    }
-
-    so_info := quick_file_stat(self.library_path, context.temp_allocator) or_return
-    return so_info.modification_time._nsec == cached_so_time && i64(so_info.size) == cached_so_size
-}
-
-@(private="file")
-clear_build_cache_sources :: proc(self: ^Project) {
-    for key in self.src_time_modification_cache {
-        delete(key)
-    }
-    clear(&self.src_time_modification_cache)
-}
-
-// Removes everything in tmp. The .rdi for the copy of game.so that will be loaded first (0.so) is kept
-// only when game.so is unchanged; every other .rdi no longer matches and is deleted.
-@(private="file")
-clean_tmp_dir :: proc(self: ^Project, keep_rdi: bool) {
+clean_tmp_dir :: proc(self: ^Project) {
     if !os.exists(self.tmp_dir) {
         return
     }
@@ -150,9 +84,6 @@ clean_tmp_dir :: proc(self: ^Project, keep_rdi: bool) {
         return
     }
     for file_info in file_infos {
-        if keep_rdi && file_info.type != .Directory && file_info.name == "0.so.rdi" {
-            continue
-        }
         if file_info.type == .Directory {
             os.remove_all(file_info.fullpath)
         } else if err := os.remove(file_info.fullpath); err != nil {
@@ -195,14 +126,8 @@ game_manager_init :: proc(self: ^Game_Manager, engine: ^Engine, path_to_project:
     self.project.tmp_dir = quick_concat({self.project.directory, "/tmp/"}) or_return
     self.library.library_path = quick_concat({self.project.directory, "/game.so"}) or_return
     self.project.library_path = self.library.library_path
-    self.project.cache_path = quick_concat({self.project.directory, BUILD_CACHE_FILE}) or_return
 
-    so_matches := build_cache_load(&self.project)
-    self.project.library_up_to_date = so_matches && !is_library_outdated(&self.project)
-    clean_tmp_dir(&self.project, self.project.library_up_to_date)
-    if self.project.library_up_to_date {
-        log.debugf("Game library is up to date, skipping the initial build")
-    }
+    clean_tmp_dir(&self.project)
 
     shader_manager_add_directory(&engine.shader_manager, self.project.shader_dir, .Game)
     if ok := spawn_game_compiler_thread(self); !ok {
@@ -274,7 +199,6 @@ game_compiler_thread_proc :: proc(data: rawptr) {
 
     build_status: Build_Status = .Idle
     thread_status: Thread_Status = .Continue
-    initial_check := true
     for thread_status != .Stop {
         new_status, new_data := chan.try_recv(thread_status_pipe^)
         if new_data {
@@ -290,19 +214,6 @@ game_compiler_thread_proc :: proc(data: rawptr) {
             }
         }
         if thread_status == .Continue {
-            if initial_check {
-                initial_check = false
-                if project.library_up_to_date {
-                    // Nothing to build, but the main thread still has to load the existing library.
-                    if chan.try_send(build_status_pipe^, Build_Status.Success) {
-                        thread_status = .Wait
-                    } else {
-                        fmt.println("Our mother is dead(0), we too must enter the void.")
-                        thread_status = .Stop
-                    }
-                    continue
-                }
-            }
             if  is_library_outdated(project) && sources_settled(project) {
                 // Snapshot before compiling so edits made mid-build still trigger a rebuild.
                 cache_library_save_times(project)
@@ -315,9 +226,6 @@ game_compiler_thread_proc :: proc(data: rawptr) {
 
                 if compile_library(project) {
                     fmt.println("Finished Compiling Library")
-                    if !build_cache_save(project) {
-                        log.warnf("Failed to save the build cache")
-                    }
                     if !chan.try_send(build_status_pipe^, Build_Status.Success) {
 
                         fmt.println("Our mother is dead(2), we too must enter the void.")
@@ -530,7 +438,6 @@ game_manager_deinit :: proc(self: ^Game_Manager, engine: ^Engine) -> (ok:bool,) 
     delete(self.project.asset_dir)
     delete(self.project.src_dir)
     delete(self.project.tmp_dir)
-    delete(self.project.cache_path)
     delete(self.library.library_path)
     delete(self.library.loaded_library_path)
     // for key in self.project.src_time_modification_cache {

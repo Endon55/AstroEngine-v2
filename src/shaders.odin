@@ -533,6 +533,7 @@ Stage_Params :: struct {
 
     output_count: u32,
     outputs: []^spirv.SpvReflectInterfaceVariable,
+    module : spirv.SpvReflectShaderModule,
 }
 
 Reflected_Shaders :: struct {
@@ -603,40 +604,33 @@ shaders_generate_layout_raw :: proc(reflect_layout: ^Reflected_Shaders, shader: 
     stage := shader.stage
 
 
-    module : spirv.SpvReflectShaderModule
-    result := spirv.spvReflectCreateShaderModule(data_len, raw_data(shader.spirv_bytes), &module)
+    stage_params := append_and_get_ref(&reflect_layout.stage_params, Stage_Params{})
+    
+    result := spirv.spvReflectCreateShaderModule(data_len, raw_data(shader.spirv_bytes), &stage_params.module)
     if result != .SUCCESS {
         log.errorf("Failed to parse shader: %v, Err: %v", shader.name, result)
         return false
     }
-    stage_params:Stage_Params 
     binding_count:u32
-    spirv.spvReflectEnumerateDescriptorBindings(&module, &binding_count, nil)
+    spirv.spvReflectEnumerateDescriptorBindings(&stage_params.module, &binding_count, nil)
     bindings := make([]^spirv.SpvReflectDescriptorBinding, binding_count)
     defer delete(bindings)
-    spirv.spvReflectEnumerateDescriptorBindings(&module, &binding_count, raw_data(bindings))
+    spirv.spvReflectEnumerateDescriptorBindings(&stage_params.module, &binding_count, raw_data(bindings))
 
-    spirv.spvReflectEnumerateInputVariables(&module, &stage_params.input_count, nil)
+    spirv.spvReflectEnumerateInputVariables(&stage_params.module, &stage_params.input_count, nil)
     stage_params.inputs = make([]^spirv.SpvReflectInterfaceVariable, stage_params.input_count)
-    spirv.spvReflectEnumerateInputVariables(&module, &stage_params.input_count, raw_data(stage_params.inputs))
+    spirv.spvReflectEnumerateInputVariables(&stage_params.module, &stage_params.input_count, raw_data(stage_params.inputs))
 
-    spirv.spvReflectEnumerateOutputVariables(&module, &stage_params.output_count, nil)
+    spirv.spvReflectEnumerateOutputVariables(&stage_params.module, &stage_params.output_count, nil)
     stage_params.outputs = make([]^spirv.SpvReflectInterfaceVariable, stage_params.output_count)
-    spirv.spvReflectEnumerateOutputVariables(&module, &stage_params.output_count, raw_data(stage_params.outputs))
+    spirv.spvReflectEnumerateOutputVariables(&stage_params.module, &stage_params.output_count, raw_data(stage_params.outputs))
 
     push_constants_count: u32
-    spirv. spvReflectEnumeratePushConstantBlocks(&module, &push_constants_count, nil)
+    spirv. spvReflectEnumeratePushConstantBlocks(&stage_params.module, &push_constants_count, nil)
     push_constants := make([]^spirv.SpvReflectBlockVariable, push_constants_count)
     defer delete(push_constants)
-    spirv.spvReflectEnumeratePushConstantBlocks(&module, &push_constants_count, raw_data(push_constants))
-    //
-    //
-    // log.info("--------Inputs----------")
-    // print_inputs(stage_params.inputs, stage_params.input_count, 0)
-    //
-    // log.info("--------Outputs----------")
-    // print_inputs(stage_params.outputs, stage_params.output_count, 0)
-    //
+    spirv.spvReflectEnumeratePushConstantBlocks(&stage_params.module, &push_constants_count, raw_data(push_constants))
+
     for binding, index in bindings {
         
         if binding.set not_in reflect_layout.layout {
@@ -681,7 +675,6 @@ shaders_generate_layout_raw :: proc(reflect_layout: ^Reflected_Shaders, shader: 
         append(&reflect_layout.push_constants, push_constants_range)
     }
     stage_params.stage = stage
-    append(&reflect_layout.stage_params, stage_params)
     return true
 }
 
@@ -757,15 +750,19 @@ shaders_generate_raw_layout_render:: proc(vk_device: vk.Device, render_shaders: 
 
 
 delete_reflected_shaders :: proc(self:^Reflected_Shaders) {
-
+    log.debugf("Deleting reflected shaders")
     for key, &value in self.layout {
+        
         delete(value)
     }
     delete(self.layout)
+
     delete(self.push_constants)
-    for params in self.stage_params {
+
+    for &params in self.stage_params {
         delete(params.inputs)
         delete(params.outputs)
+        spirv.spvReflectDestroyShaderModule(&params.module)
     }
     delete(self.stage_params)
 
