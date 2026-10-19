@@ -110,9 +110,7 @@ upload_mesh :: proc(self: ^Engine, indices: []u32, vertices: []Vertex,) -> (
          if intr.expect(res, vk.Result.SUCCESS) == .SUCCESS {
              return true
          }
-
-         log.errorf("[Vulkan Error] %s: %v", message, res)
-         runtime.print_caller_location(loc)
+         log.errorf("[Vulkan Error] %s: %v: loc:%v", message, res, loc)
          return false
 }
  

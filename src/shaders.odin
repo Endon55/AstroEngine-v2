@@ -22,6 +22,8 @@ Shader::struct {
     stage: vk.ShaderStageFlag,
     modify_time: time.Time,
     spirv_bytes:[]byte,
+    //Not Guaranteed to be valid, call Shader_Get_Module().
+    module: vk.ShaderModule,
 }
 Shader_Dir::struct {
     shader_directory: string,
@@ -75,7 +77,10 @@ shader_manager_add_directory :: proc(self: ^Shader_Manager, directory: string, d
     shader_dir.domain = domain
      
     append(&self.shader_dirs, shader_dir)
-    shader_manager_update_shaders(self, &self.shader_dirs[len(self.shader_dirs) - 1], "")
+    ok = shader_manager_update_shaders(self, &self.shader_dirs[len(self.shader_dirs) - 1], "")
+    if !ok {
+
+    }
     return true
 }
 
@@ -111,6 +116,7 @@ shader_manager_qualify_name :: proc(domain: Shader_Domain, name: string) -> stri
 
 shader_manager_update :: proc(self: ^Shader_Manager, engine: ^Engine) {
     if self.hot_reload_thread == nil {
+        log.errorf("Hot reload thread doesn't exist home boy")
         return
     }
 
@@ -332,7 +338,7 @@ shader_determine_stage :: proc(filename: string) -> (stage:vk.ShaderStageFlag) {
 
 shader_manager_update_shaders :: proc(self: ^Shader_Manager, shader_dir: ^Shader_Dir, path_from_shader_dir:string) ->(ok:bool) {
     
-    src: string = quick_concat({shader_dir.source_directory, path_from_shader_dir})or_return
+    src: string = quick_concat({shader_dir.source_directory, path_from_shader_dir}) or_return
     defer delete(src)
 
     file_infos: []os.File_Info = load_directory_contents_from_disc(src) or_return 
@@ -359,7 +365,11 @@ shader_manager_update_shaders :: proc(self: ^Shader_Manager, shader_dir: ^Shader
             delete(info.fullpath)
             continue
         }
-        filename_stripped := strings.substring(info.name, 0, len(info.name) - len(".slang")) or_return 
+        filename_stripped, strip_ok := strings.substring(info.name, 0, len(info.name) - len(".slang"))
+        if !strip_ok {
+            log.errorf("Failed to substring .slang from: %v", info.name)
+            return false
+        }
         relative_name := quick_concat({path_from_shader_dir, filename_stripped} ) or_return
 
         compile_path := quick_concat({shader_dir.compiled_directory,relative_name, ".spv"}, context.allocator) or_return
@@ -371,6 +381,7 @@ shader_manager_update_shaders :: proc(self: ^Shader_Manager, shader_dir: ^Shader
             modify_time = info.modification_time,
             compiled_path = compile_path,
             stage = stage,
+            module = bits.U64_MAX,
         }
         out_of_date:= shader_manager_is_out_of_date(&shader)
         
@@ -449,6 +460,7 @@ shader_manager_compile_shader :: proc(self: ^Shader_Manager, shader_dir:^ Shader
     }  
     if len(shaders) == 0 {
         delete(shaders)
+        log.info("Uh oh zero shaders available after compilation")
         return nil, false
     }
     result_spirv := shaders[0].spirv
@@ -489,6 +501,17 @@ shader_manager_deinit :: proc(self: ^Shader_Manager) {
     delete(self.shaders)
 }
 
+shader_get_module :: proc(vk_device: vk.Device, shader:^Shader) -> (module: vk.ShaderModule, ok: bool) {
+    if shader.module == bits.U64_MAX {
+        shader.module, ok = create_shader_module(vk_device, shader.spirv_bytes)
+        if !ok {
+            log.errorf("Failed to create the shader module: %v", shader.name)
+            return module, false
+        }
+    }
+
+    return shader.module, true
+}
 
 Astro_Shaders :: union {
     Render_Shaders,
@@ -510,9 +533,15 @@ Stage_Params :: struct {
 
     output_count: u32,
     outputs: []^spirv.SpvReflectInterfaceVariable,
-
-
 }
+
+Reflected_Shaders :: struct {
+    layout: map[u32]map[u32]vk.DescriptorSetLayoutBinding,
+    push_constants: [dynamic]vk.PushConstantRange,
+    stage_params: [dynamic]Stage_Params,
+}
+
+
 Compute_Shaders :: struct {
     compute: Shader,
 }
@@ -561,25 +590,26 @@ validate_input_outputs :: proc(stage_params:^[dynamic]Stage_Params) ->(ok:bool,)
             }
 
         }            
-
+        
 
     }
     return true
 }
 
-shaders_generate_layout_raw :: proc(layout:^map[u32]map[u32]vk.DescriptorSetLayoutBinding, push_constants_ranges :^[dynamic]vk.PushConstantRange, shader: Shader) -> (stage_params: Stage_Params, ok:bool,) {
+shaders_generate_layout_raw :: proc(reflect_layout: ^Reflected_Shaders, shader: Shader) -> (ok:bool,) {
     log.debugf("----------------------------------------------------")
     log.debugf("Parsing Shader: %v", shader.name)
     data_len: uint = len(shader.spirv_bytes)        
     stage := shader.stage
 
+
     module : spirv.SpvReflectShaderModule
     result := spirv.spvReflectCreateShaderModule(data_len, raw_data(shader.spirv_bytes), &module)
     if result != .SUCCESS {
         log.errorf("Failed to parse shader: %v, Err: %v", shader.name, result)
-        return stage_params, false
+        return false
     }
-    
+    stage_params:Stage_Params 
     binding_count:u32
     spirv.spvReflectEnumerateDescriptorBindings(&module, &binding_count, nil)
     bindings := make([]^spirv.SpvReflectDescriptorBinding, binding_count)
@@ -609,14 +639,14 @@ shaders_generate_layout_raw :: proc(layout:^map[u32]map[u32]vk.DescriptorSetLayo
     //
     for binding, index in bindings {
         
-        if binding.set not_in layout^ {
-            layout^[binding.set] = make(map[u32]vk.DescriptorSetLayoutBinding)
+        if binding.set not_in reflect_layout.layout {
+            reflect_layout.layout[binding.set] = make(map[u32]vk.DescriptorSetLayoutBinding)
         }
-        set_map := &layout^[binding.set]
+        set_map := &reflect_layout.layout[binding.set]
 
         stage_flag: vk.ShaderStageFlags
         
-        redundant_binding, bind_ok := layout[binding.set][binding.binding]
+        redundant_binding, bind_ok := reflect_layout.layout[binding.set][binding.binding]
 
         descriptor_type := cast(vk.DescriptorType)binding.descriptor_type
         if bind_ok {
@@ -624,7 +654,7 @@ shaders_generate_layout_raw :: proc(layout:^map[u32]map[u32]vk.DescriptorSetLayo
 
             if redundant_binding.descriptorType != descriptor_type {
                 log.errorf("Conflicted Bindings in Shader: %v(Set:%v, Binding:%v)", shader.name, binding.set, binding.binding)
-                return stage_params, false
+                return false
             }
 
         }
@@ -642,15 +672,17 @@ shaders_generate_layout_raw :: proc(layout:^map[u32]map[u32]vk.DescriptorSetLayo
     }
     for constant in push_constants {
         //log.infof("Push Constants - Name: %v, Size: %v, Offset: %v", constant.name, constant.size, constant.offset)
+
         push_constants_range := vk.PushConstantRange{
             stageFlags = {stage},
-            offset = push_constants[0].offset,
-            size = push_constants[0].size,
+            offset = constant.offset,
+            size = constant.size,
         }
-        append(push_constants_ranges, push_constants_range)
+        append(&reflect_layout.push_constants, push_constants_range)
     }
     stage_params.stage = stage
-    return stage_params, true
+    append(&reflect_layout.stage_params, stage_params)
+    return true
 }
 
 print_inputs :: proc(inputs: []^spirv.SpvReflectInterfaceVariable, count: u32, levels: u32) {
@@ -674,106 +706,98 @@ print_inputs :: proc(inputs: []^spirv.SpvReflectInterfaceVariable, count: u32, l
     }
 }
 
-shaders_generate_layout_render:: proc(vk_device: vk.Device, render_shaders: Render_Shaders) ->(pipeline_layout: vk.PipelineLayout, ok: bool) {
+shaders_generate_raw_layout_render:: proc(vk_device: vk.Device, render_shaders: Render_Shaders) -> (layout: Reflected_Shaders, ok: bool) {
 
-    layout := make(map[u32]map[u32]vk.DescriptorSetLayoutBinding)
-    push_constants_ranges := make([dynamic]vk.PushConstantRange)
-    stage_params := make([dynamic]Stage_Params) 
+    layout.layout = make(map[u32]map[u32]vk.DescriptorSetLayoutBinding)
+    layout.push_constants = make([dynamic]vk.PushConstantRange)
+    layout.stage_params = make([dynamic]Stage_Params) 
     if render_shaders.vertex.name != "" && render_shaders.vertex.stage != .VERTEX {
         log.errorf("Invalid Vertex Shader")
-        return pipeline_layout, false
+        return layout, false
     }
     else {
-        parms := shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.vertex) or_return
-        append(&stage_params, parms)
+        shaders_generate_layout_raw(&layout, render_shaders.vertex) or_return
     }
     if render_shaders.fragment.name != "" && render_shaders.fragment.stage != .FRAGMENT {
         log.errorf("Invalid Fragment Shader")
-        return pipeline_layout, false
+        return layout, false
     }
     else {
-        parms := shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.fragment) or_return
-        append(&stage_params, parms)
+        shaders_generate_layout_raw(&layout, render_shaders.fragment) or_return
     }
     if render_shaders.tessellation_control.name != "" {
         if render_shaders.tessellation_control.stage != .TESSELLATION_CONTROL {
             log.errorf("Invalid Tessellation Control Shader")
-            return pipeline_layout, false
+            return layout, false
         }   
         else {
-            parms := shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.tessellation_control) or_return
-            append(&stage_params, parms)
+            shaders_generate_layout_raw(&layout, render_shaders.tessellation_control) or_return
         }
         //Evaluation Shaders are required if you have a Control shader
         if render_shaders.tessellation_evaluation.name == "" || render_shaders.tessellation_evaluation.stage != .TESSELLATION_EVALUATION {
             log.errorf("Invalid Tessellation Evaluation Shader. Evaluation shaders are required when using Control shaders.")
-            return pipeline_layout, false
+            return layout, false
         }   
         else {
-            parms:=shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.tessellation_evaluation) or_return
-            append(&stage_params, parms)
+            shaders_generate_layout_raw(&layout, render_shaders.tessellation_evaluation) or_return
         }
     }
     if render_shaders.geometry.name != "" {
         if render_shaders.geometry.stage != .GEOMETRY {
             log.errorf("Invalid Geometry Shader")
-            return pipeline_layout, false
+            return layout, false
         }
         else {
-            parms:= shaders_generate_layout_raw(&layout, &push_constants_ranges, render_shaders.geometry) or_return
-            append(&stage_params, parms)
+            shaders_generate_layout_raw(&layout, render_shaders.geometry) or_return
         }
     }
-    validate_input_outputs(&stage_params) or_return
-    vk_layout :=  generate_from_raw(vk_device, &layout, &push_constants_ranges) or_return
 
-    for key, &value in layout {
+    return layout, true
+}
+
+
+delete_reflected_shaders :: proc(self:^Reflected_Shaders) {
+
+    for key, &value in self.layout {
         delete(value)
     }
-    delete(layout)
-    delete(push_constants_ranges)
-    for params in stage_params {
+    delete(self.layout)
+    delete(self.push_constants)
+    for params in self.stage_params {
         delete(params.inputs)
         delete(params.outputs)
     }
-    delete(stage_params)
+    delete(self.stage_params)
 
-    return vk_layout, true
 }
 
-shaders_generate_layout_compute :: proc(vk_device: vk.Device, compute_shaders: Compute_Shaders) ->(pipeline_layout: vk.PipelineLayout, ok:bool,) {
+shaders_generate_raw_layout_compute :: proc(vk_device: vk.Device, compute_shaders: Compute_Shaders) ->(layout: Reflected_Shaders, ok: bool) {
+
         if compute_shaders.compute.name != "" && compute_shaders.compute.stage != .COMPUTE{
             log.errorf("Invalid Compute Shader")
             log.errorf("Could not Generate Compute Pipeline Layout")
-            return pipeline_layout, false 
+            return layout, false 
         }
         //set:  binding: layout
+        layout.layout = make(map[u32]map[u32]vk.DescriptorSetLayoutBinding)
+        layout.push_constants = make([dynamic]vk.PushConstantRange)
+        layout.stage_params = make([dynamic]Stage_Params) 
 
-        layout := make(map[u32]map[u32]vk.DescriptorSetLayoutBinding)
-        push_constants_ranges := make([dynamic]vk.PushConstantRange)
+        shaders_generate_layout_raw(&layout, compute_shaders.compute) or_return
 
-        params := shaders_generate_layout_raw(&layout, &push_constants_ranges, compute_shaders.compute) or_return
-        defer delete(params.inputs)
-        defer delete(params.outputs)
-
-        vk_layout :=  generate_from_raw(vk_device, &layout, &push_constants_ranges) or_return
-    for key, &value in layout {
-        delete(value)
-    }
-    delete(layout)
-    delete(push_constants_ranges)
-
-    return vk_layout, true
+    return layout, true
 }
 
-@(private="file")
-generate_from_raw :: proc(vk_device: vk.Device, layout:^map[u32]map[u32]vk.DescriptorSetLayoutBinding, push_constants_ranges :^[dynamic]vk.PushConstantRange,) ->(pipeline_layout:vk.PipelineLayout, ok:bool,) {
+generate_vk_layout :: proc(vk_device: vk.Device, layout: ^Reflected_Shaders) ->(pipeline_layout:vk.PipelineLayout, ok:bool,) {
 
-    set_layouts := make([]vk.DescriptorSetLayout, len(layout))
+    validate_input_outputs(&layout.stage_params) or_return
+
+    set_layouts := make([]vk.DescriptorSetLayout, len(layout.layout))
     defer delete(set_layouts)
     bind_index: u32
     set_index: u32
-    for set, binding_layouts in layout {
+    for set, binding_layouts in layout.layout {
+        log.debugf("Set: %v", set)
         bind_index = 0
         bindings := make([]vk.DescriptorSetLayoutBinding, len(binding_layouts))
         defer delete(bindings)
@@ -782,12 +806,12 @@ generate_from_raw :: proc(vk_device: vk.Device, layout:^map[u32]map[u32]vk.Descr
             bind_index += 1
         }
 
+        log.debugf("Bindings: %v", bindings)
         set_layout_info:= vk.DescriptorSetLayoutCreateInfo {
             sType = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             bindingCount = u32(len(bindings)),
             pBindings = raw_data(bindings),
         }
-
         set_layout : vk.DescriptorSetLayout
         vk_check(vk.CreateDescriptorSetLayout(vk_device, &set_layout_info, nil, &set_layout)) or_return
 
@@ -799,8 +823,8 @@ generate_from_raw :: proc(vk_device: vk.Device, layout:^map[u32]map[u32]vk.Descr
         sType = .PIPELINE_LAYOUT_CREATE_INFO,
         setLayoutCount = u32(len(set_layouts)),
         pSetLayouts = raw_data(set_layouts),
-        pushConstantRangeCount = u32(len(push_constants_ranges^)),
-        pPushConstantRanges =  raw_data(push_constants_ranges^),
+        pushConstantRangeCount = u32(len(layout.push_constants)),
+        pPushConstantRanges =  raw_data(layout.push_constants),
     }
 
     vk_check(vk.CreatePipelineLayout(vk_device, &pipeline_layout_info, nil, &pipeline_layout)) or_return

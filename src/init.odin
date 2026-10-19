@@ -84,14 +84,20 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
 
     log.debugf("Initializing Vulkan")
     engine_init_vulkan(self) or_return
+
+    log.debugf("Initializing Memory Manager")
+    memory_manager_init(&self.memory_manager, self) or_return
+    self.vma_allocator = self.memory_manager.vma_allocator
+
     log.debugf("Initializing Swapchain")
     engine_init_swapchain(self) or_return
     log.debugf("Initializing Engine Commands")
     engine_init_commands(self) or_return
     log.debugf("Initializing Sync Structures")
     engine_init_sync_structures(self) or_return
-
+    log.debugf("Initializing Shader Manager")
     shader_manager_init(&self.shader_manager) or_return
+    log.debugf("Initializing Game Manager")
     game_manager_init(&self.game_manager, self, "", context.allocator) or_return
 
 
@@ -108,6 +114,7 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
     engine_init_default_data(self) or_return
     self.is_initialized = true
 
+    log.debugf("Starting Game")
     game_manager_game_init(&self.game_manager, &self.scene, self)
     shader_manager_start_hot_reload(&self.shader_manager) or_return
 
@@ -178,16 +185,8 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
     deletion_queue_init(&self.main_deletion_queue, self.vk_device)
 
 
-    memory_manager_init(&self.memory_manager, self) or_return
-    engine_init_vma(self) or_return
     return true 
 }
-
-engine_init_vma :: proc(self: ^Engine,) -> (ok:bool) {
-    self.vma_allocator = self.memory_manager.vma_allocator
-    return true
-}
-
 engine_create_swapchain :: proc(self: ^Engine, extent: vk.Extent2D) -> (ok: bool) {
 
     ta := context.temp_allocator

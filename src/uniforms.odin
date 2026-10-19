@@ -21,24 +21,67 @@ import spirv "libs:spirv-reflect"
     So we should instead use set0,binding1 to store the color data.
 */
 
-Shader_Pipeline_Builder :: struct {
-    vk_device: vk.Device,
-    shaders: Astro_Shaders,
-    pipeline_layout: vk.PipelineLayout,
-    memory_manager: ^Memory_Manager,
-}
+
 Shader_Pipeline :: struct {
     vk_device: vk.Device,
     pipeline_layout: vk.PipelineLayout,
+    pipeline: vk.Pipeline,
+    bind_point: vk.PipelineBindPoint,
+    uniform_bindings: [dynamic]Uniform_Binding,
+    texture_bindings: [dynamic]Texture_Binding,
+}
+Uniform_Binding :: struct {
+    binding: u32,
+    set: u32,
+    mem_reference: Memory_Reference,
+}
+Texture_Binding :: struct {
+    binding: u32,
+    set: u32,
+    reference: Texture_Reference,
 }
 
-Bind_Data :: struct {
 
+
+
+
+shader_pipeline_bind :: proc(self: ^Shader_Pipeline, cmd: vk.CommandBuffer) {
+
+    vk.CmdBindPipeline(cmd, self.bind_point, self.pipeline)
+    // vk.CmdBindDescriptorSets(
+    //     cmd,
+    //     .COMPUTE,
+    //     ocean_sim.jonswap_layout.handle,
+    //     0,
+    //     1,
+    //     &ocean_sim.jonswap_descriptor,
+    //     0,
+    //     nil,
+    // )
+    // vk.CmdPushConstants(
+    //     cmd,
+    //     ocean_sim.jonswap_layout.handle,
+    //     {.COMPUTE},
+    //     0,
+    //     size_of(Spectrum_Parameters),
+    //     &ocean_sim.spectrum_params,
+    // )
+
+}
+
+Shader_Pipeline_Builder :: struct {
+    vk_device: vk.Device,
+    shaders: Astro_Shaders,
+    reflect_layout: Reflected_Shaders,
+    shader_pipeline: Shader_Pipeline,
+    memory_manager: ^Memory_Manager,
 }
 
 shader_pipeline_builder_init :: proc(self: ^Shader_Pipeline_Builder, memory_manager:^Memory_Manager, device: vk.Device) -> (ok:bool) {
     self.vk_device = device
     self.memory_manager = memory_manager
+    self.shader_pipeline.uniform_bindings = make([dynamic]Uniform_Binding)
+
     alloc_size: vk.DeviceSize = 50;
     buffer_info := vk.BufferCreateInfo {
         sType = .BUFFER_CREATE_INFO,
@@ -56,12 +99,12 @@ shader_pipeline_builder_init :: proc(self: ^Shader_Pipeline_Builder, memory_mana
 
 shader_pipeline_builder_set_shaders :: proc(self: ^Shader_Pipeline_Builder, astro_shaders: Astro_Shaders, loc:=#caller_location){
     ok: bool
-
+    self.shaders = astro_shaders
     switch shaders in astro_shaders {
     case Render_Shaders:
-        self.pipeline_layout, ok = shaders_generate_layout_render(self.vk_device, shaders) 
+        self.reflect_layout, ok = shaders_generate_raw_layout_render(self.vk_device, shaders) 
     case Compute_Shaders:
-        self.pipeline_layout, ok = shaders_generate_layout_compute(self.vk_device, shaders) 
+        self.reflect_layout, ok = shaders_generate_raw_layout_compute(self.vk_device, shaders) 
     }
 
     if !ok {
@@ -70,9 +113,72 @@ shader_pipeline_builder_set_shaders :: proc(self: ^Shader_Pipeline_Builder, astr
     }
 }
 
-shader_pipeline_builder_bind_data_ptr :: proc(self: ^Shader_Pipeline_Builder, data: ^^$T, set:u32, binding: u32) {
-    mem_ref := memory_manager_bind_uniform(self.memory_manager, size_of(T))
-    assert(mem_ref.pointer != nil, "Got a bad pointer for the uniform")
-    data^ = cast(^T)mem_ref.pointer
+shader_pipeline_builder_bind_uniform_ptr :: proc(self: ^Shader_Pipeline_Builder, data: ^^$T, set:u32, binding: u32) {
+    uniform_binding: Uniform_Binding
+    uniform_binding.set = set
+    uniform_binding.binding = binding
+    uniform_binding.mem_reference = memory_manager_bind_uniform(self.memory_manager, size_of(T))
+
+    assert(uniform_binding.mem_reference.pointer != nil, "Got a bad pointer for the uniform")
+    append(&self.shader_pipeline.uniform_bindings, uniform_binding)
+
+    data^ = cast(^T)uniform_binding.mem_reference.pointer
 }
 
+shader_pipeline_builder_bind_image :: proc{
+    shader_pipeline_builder_bind_image_existing,
+    shader_pipeline_builder_bind_image_new,
+}
+shader_pipeline_builder_bind_image_existing :: proc(self: ^Shader_Pipeline_Builder, texture_reference: Texture_Reference, set:u32, binding:u32) {
+
+    texture_binding: Texture_Binding
+
+    texture_binding.reference = texture_reference 
+    texture_binding.set = set
+    texture_binding.binding = binding
+
+    append(&self.shader_pipeline.texture_bindings, texture_binding)
+}
+
+shader_pipeline_builder_bind_image_new :: proc(self: ^Shader_Pipeline_Builder, image_info:vk.ImageCreateInfo, set:u32, binding: u32) -> Texture_Reference{
+
+    texture_binding: Texture_Binding
+    ref, ok := create_texture_info(self.memory_manager, image_info) 
+    if !ok {
+        log.errorf("Failed to create texture with image info")
+        return ref
+    }
+    texture_binding.reference = ref
+    texture_binding.set = set
+    texture_binding.binding = binding
+
+    append(&self.shader_pipeline.texture_bindings, texture_binding)
+    return texture_binding.reference
+}
+
+
+shader_pipeline_builder_build :: proc(self: ^Shader_Pipeline_Builder) ->(shader_pipeline:Shader_Pipeline, ok:bool) {
+
+    shader_pipeline = self.shader_pipeline
+    defer delete_reflected_shaders(&self.reflect_layout)
+
+    shader_pipeline.pipeline_layout = generate_vk_layout(self.vk_device, &self.reflect_layout) or_return
+
+    switch &shaders in self.shaders {
+    case Compute_Shaders:
+        module:= shader_get_module(self.vk_device, &shaders.compute) or_return
+        pipeline_create_info := vk.ComputePipelineCreateInfo {
+            sType = .COMPUTE_PIPELINE_CREATE_INFO,
+            layout = shader_pipeline.pipeline_layout,
+            stage = pipeline_shader_stage_create_info({.COMPUTE}, module, "main"),
+        }
+        shader_pipeline.bind_point = .COMPUTE
+        vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &pipeline_create_info, nil, &shader_pipeline.pipeline), "Failed to create compute pipeline") or_return
+    
+    case Render_Shaders:
+
+    }
+
+
+    return shader_pipeline, true
+}

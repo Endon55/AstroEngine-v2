@@ -35,7 +35,7 @@ pack_unorm_4x8 :: proc "contextless" (v: la.Vector4f32) -> u32 {
 quick_concat :: proc(strs: []string, allocator:= context.allocator, loc := #caller_location) ->(concat: string, ok:bool) {
     concatstr, err_c := strings.concatenate(strs, context.allocator, loc)
     if err_c != nil {
-        log.warnf("Failed to concatenate strings: %s, %s")
+        log.errorf("Failed to concatenate strings: %v", strs)
         return concat, false
     } 
     return concatstr, true
