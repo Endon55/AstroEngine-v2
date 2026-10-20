@@ -3,6 +3,7 @@ package astro
 import vk "vendor:vulkan"
 import "vendor:glfw"
 import "core:log"
+import "core:strings"
 import "core:slice"
 import "base:runtime"
 
@@ -47,11 +48,13 @@ Physical_Device::struct{
 
     has_universal_queue_family: bool,
     properties : vk.PhysicalDeviceProperties,
+    properties_buffer: vk.PhysicalDeviceDescriptorBufferPropertiesEXT,
     feature_chain: vk.PhysicalDeviceFeatures2,
     features : vk.PhysicalDeviceFeatures,
     features_11: vk.PhysicalDeviceVulkan11Features, 
     features_12: vk.PhysicalDeviceVulkan12Features,
     features_13: vk.PhysicalDeviceVulkan13Features,
+    features_descriptor_buffers: vk.PhysicalDeviceDescriptorBufferFeaturesEXT,
     extensions: []vk.ExtensionProperties,
     surface_capabilities: vk.SurfaceCapabilitiesKHR,
     surface_formats: []vk.SurfaceFormatKHR,
@@ -66,6 +69,7 @@ Vulkan_Feature_Requirements::struct{
     device_features_11: vk.PhysicalDeviceVulkan11Features,
     device_features_12: vk.PhysicalDeviceVulkan12Features,
     device_features_13: vk.PhysicalDeviceVulkan13Features,
+    device_features_descriptor_buffers: vk.PhysicalDeviceDescriptorBufferFeaturesEXT,
     device_extensions: [dynamic]cstring,
 }
 
@@ -303,12 +307,22 @@ destroy_device :: proc(self: ^Vulkan_Creation_Context, loc := #caller_location) 
 query_physical_device ::proc(self: ^Physical_Device, surface: vk.SurfaceKHR){
 
     vk.GetPhysicalDeviceProperties(self.vk_physical_device, &self.properties)
+    self.properties_buffer.sType = .PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT
+    self.properties_buffer.pNext = nil
+    properties2 := vk.PhysicalDeviceProperties2{
+        sType = .PHYSICAL_DEVICE_PROPERTIES_2,
+        pNext = &self.properties_buffer,
+    }
+    vk.GetPhysicalDeviceProperties2(self.vk_physical_device, &properties2)
 
     vk.GetPhysicalDeviceFeatures(self.vk_physical_device, &self.features)
-
+    self.features_descriptor_buffers = {
+        sType = .PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
+        pNext = nil,
+    }
     self.features_13 = {
         sType = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-        pNext = nil,
+        pNext = &self.features_descriptor_buffers,
     }
     self.features_12 = {
         sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
@@ -326,7 +340,7 @@ query_physical_device ::proc(self: ^Physical_Device, surface: vk.SurfaceKHR){
     vk.GetPhysicalDeviceFeatures2(self.vk_physical_device, &self.feature_chain)
     self.feature_chain.features = self.features
     extension_count: u32
-
+    
     vk.EnumerateDeviceExtensionProperties(self.vk_physical_device, nil, &extension_count, nil)
     self.extensions = make([]vk.ExtensionProperties, extension_count, context.allocator)
 
@@ -409,7 +423,8 @@ supports_all_features :: proc(self: Physical_Device, reqs: Vulkan_Feature_Requir
     return compare_features_structs(self.features, reqs.device_features) &&
             compare_features_structs(self.features_11, reqs.device_features_11) &&
             compare_features_structs(self.features_12, reqs.device_features_12) &&
-            compare_features_structs(self.features_13, reqs.device_features_13)
+            compare_features_structs(self.features_13, reqs.device_features_13) &&
+            compare_features_structs(self.features_descriptor_buffers, reqs.device_features_descriptor_buffers)
 }
 
 
@@ -483,7 +498,12 @@ default_debug_callback :: proc "system" (message_severity: vk.DebugUtilsMessageS
         log.warnf("[%v]: %s", message_types, p_callback_data.pMessage)
         print_stack_trace()
     } else if .ERROR in message_severity {
-        log.errorf("[%v]: %s", message_types, p_callback_data.pMessage)
+        
+        strs, err := strings.split(string(p_callback_data.pMessage), "|")
+        log.errorf("[%v]", message_types)
+        for str in strs {
+            log.errorf("%v", strings.trim_space(str))
+        }
         print_stack_trace()
         runtime.debug_trap()
     } else {

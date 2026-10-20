@@ -18,8 +18,19 @@ Allocated_Image :: struct {
     allocation: vma.Allocation,
 }
 
+is_depth_format :: proc(format: vk.Format) -> bool {
+
+
+    #partial switch format{
+        case .D16_UNORM, .D32_SFLOAT, .D32_SFLOAT_S8_UINT, .D24_UNORM_S8_UINT:
+            return true
+    } 
+
+    return false
+}
+
 @(require_results)
-create_image_default :: proc(self: ^Engine, size: vk.Extent3D, format: vk.Format, usage: vk.ImageUsageFlags, mipmapped := false,) -> (new_image: Allocated_Image, ok: bool,) {
+create_image_default :: proc(self: ^Engine, size: vk.Extent3D, format: vk.Format, usage: vk.ImageUsageFlags, mipmapped := false, alloc_flags:vma.AllocationCreateInfo = {usage = .GPU_ONLY, requiredFlags={.DEVICE_LOCAL}},) -> (new_image: Allocated_Image, ok: bool,) {
 
     new_image.allocator = self.vma_allocator
     new_image.device = self.vk_device
@@ -31,19 +42,13 @@ create_image_default :: proc(self: ^Engine, size: vk.Extent3D, format: vk.Format
         img_info.mipLevels = 
         u32(math.floor(math.log2(max(f32(size.width), f32(size.height))))) + 1
     }
-
-    alloc_info := vma.AllocationCreateInfo {
-        usage = .GPU_ONLY,
-        requiredFlags = {.DEVICE_LOCAL},
-    }
-    
-    vk_check(vma.CreateImage(self.vma_allocator, img_info, alloc_info, &new_image.image, &new_image.allocation, nil)) or_return
+    vk_check(vma.CreateImage(self.vma_allocator, img_info, alloc_flags, &new_image.image, &new_image.allocation, nil)) or_return
     defer if !ok {
         vma.DestroyImage(self.vma_allocator, new_image.image, nil)
     }
 
     aspect_flag := vk.ImageAspectFlags{.COLOR}
-    if format == .D32_SFLOAT {
+    if is_depth_format(format) {
         aspect_flag = vk.ImageAspectFlags{.DEPTH}
     }
 

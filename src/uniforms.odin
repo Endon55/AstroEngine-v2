@@ -29,6 +29,7 @@ Shader_Pipeline :: struct {
     bind_point: vk.PipelineBindPoint,
     uniform_bindings: [dynamic]Uniform_Binding,
     texture_bindings: [dynamic]Texture_Binding,
+    offsets: [][]vk.DeviceSize,
 }
 Uniform_Binding :: struct {
     binding: u32,
@@ -41,16 +42,26 @@ Texture_Binding :: struct {
     reference: Texture_Reference,
 }
 
+
+
 shader_pipeline_bind :: proc(self: ^Shader_Pipeline, cmd: vk.CommandBuffer) {
 
     vk.CmdBindPipeline(cmd, self.bind_point, self.pipeline)
-    // vk.CmdBindDescriptorSets(
+
+
+    for uniform in self.uniform_bindings {
+
+       //bind each uniform with its descriptor offset 
+    }
+    //
+    //
+    // vk.CmdBindDescriptorBuffersEXT(
     //     cmd,
     //     .COMPUTE,
-    //     ocean_sim.jonswap_layout.handle,
+    //     self.pipeline_layout,
     //     0,
     //     1,
-    //     &ocean_sim.jonswap_descriptor,
+    //     self.pipeline_,
     //     0,
     //     nil,
     // )
@@ -121,11 +132,7 @@ shader_pipeline_builder_bind_uniform_ptr :: proc(self: ^Shader_Pipeline_Builder,
     data^ = cast(^T)uniform_binding.mem_reference.pointer
 }
 
-shader_pipeline_builder_bind_image :: proc{
-    shader_pipeline_builder_bind_image_existing,
-    shader_pipeline_builder_bind_image_new,
-}
-shader_pipeline_builder_bind_image_existing :: proc(self: ^Shader_Pipeline_Builder, texture_reference: Texture_Reference, set:u32, binding:u32) {
+shader_pipeline_builder_bind_image :: proc(self: ^Shader_Pipeline_Builder, texture_reference: Texture_Reference, set:u32, binding:u32) {
 
     texture_binding: Texture_Binding
 
@@ -136,33 +143,17 @@ shader_pipeline_builder_bind_image_existing :: proc(self: ^Shader_Pipeline_Build
     append(&self.shader_pipeline.texture_bindings, texture_binding)
 }
 
-shader_pipeline_builder_bind_image_new :: proc(self: ^Shader_Pipeline_Builder, image_info:vk.ImageCreateInfo, set:u32, binding: u32) -> Texture_Reference{
-
-    texture_binding: Texture_Binding
-    ref, ok := create_texture_info(self.memory_manager, image_info) 
-    if !ok {
-        log.errorf("Failed to create texture with image info")
-        return ref
-    }
-    texture_binding.reference = ref
-    texture_binding.set = set
-    texture_binding.binding = binding
-
-    append(&self.shader_pipeline.texture_bindings, texture_binding)
-    return texture_binding.reference
-}
-
-
-shader_pipeline_builder_build :: proc(self: ^Shader_Pipeline_Builder) ->(shader_pipeline:Shader_Pipeline, ok:bool) {
+shader_pipeline_builder_build :: proc(self: ^Shader_Pipeline_Builder, engine:^Engine) ->(shader_pipeline:Shader_Pipeline, ok:bool) {
 
     shader_pipeline = self.shader_pipeline
+    shader_pipeline.vk_device = self.vk_device
     defer delete_reflected_shaders(&self.reflect_layout)
 
-    shader_pipeline.pipeline_layout = generate_vk_layout(self.vk_device, &self.reflect_layout) or_return
+    shader_pipeline.pipeline_layout, shader_pipeline.offsets = generate_vk_layout(self.vk_device, &self.reflect_layout) or_return
 
     switch &shaders in self.shaders {
     case Compute_Shaders:
-        module:= shader_get_module(self.vk_device, &shaders.compute) or_return
+        module:= shader_get_module(self.vk_device, engine, &shaders.compute) or_return
         pipeline_create_info := vk.ComputePipelineCreateInfo {
             sType = .COMPUTE_PIPELINE_CREATE_INFO,
             layout = shader_pipeline.pipeline_layout,
@@ -175,11 +166,23 @@ shader_pipeline_builder_build :: proc(self: ^Shader_Pipeline_Builder) ->(shader_
 
     }
 
+    deletion_queue_push(&engine.main_deletion_queue, shader_pipeline)
+
+    
+
 
     return shader_pipeline, true
 }
 
-destroy_shader_pipeline :: proc(self:^Shader_Pipeline) {
-   delete(self.texture_bindings)
-   delete(self.uniform_bindings)
+shader_pipeline_destroy :: proc(self:^Shader_Pipeline,) {
+
+    delete(self.texture_bindings)
+    delete(self.uniform_bindings)
+
+    for set in self.offsets {
+        delete(set)
+    }
+    delete(self.offsets)
+    vk.DestroyPipeline(self.vk_device, self.pipeline, nil)
+    vk.DestroyPipelineLayout(self.vk_device, self.pipeline_layout, nil)
 }

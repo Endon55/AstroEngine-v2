@@ -171,36 +171,9 @@ engine_draw ::proc(self: ^Engine) -> (ok: bool){
     transition_image(cmd, self.draw_image.image, .UNDEFINED, .GENERAL)
 
     engine_draw_background(self, cmd) or_return
-    //
-    // ocean_sim := &self.scene.ocean.sim_data
-    // transition_image(cmd, ocean_sim.jonswap_texture.image, .UNDEFINED, .GENERAL)
-    // vk.CmdBindPipeline(cmd, .COMPUTE, ocean_sim.jonswap_pipeline)
-    // vk.CmdBindDescriptorSets(
-    //     cmd,
-    //     .COMPUTE,
-    //     ocean_sim.jonswap_layout,
-    //     0,
-    //     1,
-    //     &ocean_sim.jonswap_descriptor,
-    //     0,
-    //     nil,
-    // )
-    // vk.CmdPushConstants(
-    //     cmd,
-    //     ocean_sim.jonswap_layout,
-    //     {.COMPUTE},
-    //     0,
-    //     size_of(Spectrum_Parameters),
-    //     &ocean_sim.spectrum_params,
-    // )
-    // vk.CmdDispatch(
-    //     cmd,
-    //     u32(math.ceil_f32(f32(DOMAIN_GRAPH_EXTENT.width) / 16.0)),
-    //     u32(math.ceil_f32(f32(DOMAIN_GRAPH_EXTENT.height) / 16.0)),
-    //     1,
-    // )
-    // transition_image(cmd, ocean_sim.jonswap_texture.image, .GENERAL, .SHADER_READ_ONLY_OPTIMAL)
-    //
+    memory_manager_advance_frame(&self.memory_manager)
+    memory_manager_bind_self(&self.memory_manager, cmd)
+
     transition_image(cmd, self.draw_image.image, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL)
     transition_image(cmd, self.depth_image.image, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL)
 

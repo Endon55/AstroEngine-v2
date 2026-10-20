@@ -141,6 +141,11 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
     runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
     
     features:= Vulkan_Feature_Requirements {
+        device_features_descriptor_buffers = {
+            sType = .PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
+            descriptorBuffer = true,
+            descriptorBufferPushDescriptors = true,
+        },
         device_features_11 = {
             sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
             shaderDrawParameters = true,
@@ -684,7 +689,6 @@ engine_cleanup :: proc(self: ^Engine) {
         return
     }
     ensure(vk.DeviceWaitIdle(self.vk_device) == .SUCCESS)
-    game_manager_deinit(&self.game_manager, self)
 
     for effect in self.background_effects {
         vk.DestroyPipeline(self.vk_device, effect.pipeline, nil)
@@ -701,6 +705,7 @@ engine_cleanup :: proc(self: ^Engine) {
     delete(self.main_draw_context.opaque_surfaces)
     delete(self.name_for_node)
 
+    game_manager_deinit(&self.game_manager, self)
     for &frame in self.frames {
         descriptor_allocator_destroy(&frame.frame_descriptors)
         vk.DestroyCommandPool(self.vk_device, frame.command_pool, nil)

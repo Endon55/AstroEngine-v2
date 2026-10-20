@@ -618,12 +618,14 @@ game_manager_game_deinit :: proc(self: ^Game_Manager, scene: ^Scene, engine: ^En
     context.allocator = self.game_allocator
     context.logger = self.game_logger
 
+    deletion_queue_flush_by_allocator(&engine.main_deletion_queue, context.allocator, false)
     if !self.library.api.deinit(scene, engine) {
         context.logger = engine.logger
         log.errorf("Game failed to deinit properly")
     }
     context.allocator = engine.allocator
     context.logger = engine.logger
+    
 }
 
 

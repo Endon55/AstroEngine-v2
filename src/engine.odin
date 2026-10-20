@@ -69,6 +69,8 @@ Engine::struct {
     depth_image: Allocated_Image,
     draw_extent: vk.Extent2D,
     render_scale: f32,
+    
+    master_layout: vk.PipelineLayout,
 
     background_layout: Pipeline_Layout,
     background_effects: [Compute_Effect_Kind]Compute_Effect,
@@ -179,7 +181,6 @@ engine_run :: proc(self: ^Engine) -> (ok: bool) {
     for !glfw.WindowShouldClose(self.window) {
         glfw.PollEvents()
         input_update(&self.input)
-        //self.scene.ocean.ocean_data.time += f32(t.delta_time)
 
         if self.stop_rendering {
             glfw.WaitEvents()

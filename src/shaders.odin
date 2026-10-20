@@ -501,9 +501,10 @@ shader_manager_deinit :: proc(self: ^Shader_Manager) {
     delete(self.shaders)
 }
 
-shader_get_module :: proc(vk_device: vk.Device, shader:^Shader) -> (module: vk.ShaderModule, ok: bool) {
+shader_get_module :: proc(vk_device: vk.Device, engine: ^Engine, shader:^Shader) -> (module: vk.ShaderModule, ok: bool) {
     if shader.module == bits.U64_MAX {
         shader.module, ok = create_shader_module(vk_device, shader.spirv_bytes)
+        deletion_queue_push(&engine.main_deletion_queue, shader.module)
         if !ok {
             log.errorf("Failed to create the shader module: %v", shader.name)
             return module, false
@@ -785,37 +786,47 @@ shaders_generate_raw_layout_compute :: proc(vk_device: vk.Device, compute_shader
     return layout, true
 }
 
-generate_vk_layout :: proc(vk_device: vk.Device, layout: ^Reflected_Shaders) ->(pipeline_layout:vk.PipelineLayout, ok:bool,) {
+generate_vk_layout :: proc(vk_device: vk.Device, layout: ^Reflected_Shaders) ->(pipeline_layout:vk.PipelineLayout, offsets:[][]vk.DeviceSize, ok:bool,) {
 
     validate_input_outputs(&layout.stage_params) or_return
-
+    
     set_layouts := make([]vk.DescriptorSetLayout, len(layout.layout))
-    defer delete(set_layouts)
-    bind_index: u32
-    set_index: u32
+    defer {
+        // The pipeline layout keeps what it needs, so the set layouts aren't needed past this proc.
+        for set_layout in set_layouts {
+            if set_layout != 0 {
+                vk.DestroyDescriptorSetLayout(vk_device, set_layout, nil)
+            }
+        }
+        delete(set_layouts)
+    }
+    offsets = make([][]vk.DeviceSize, len(layout.layout))
     for set, binding_layouts in layout.layout {
-        log.debugf("Set: %v", set)
-        bind_index = 0
         bindings := make([]vk.DescriptorSetLayoutBinding, len(binding_layouts))
         defer delete(bindings)
         for binding, layout in binding_layouts {
-            bindings[bind_index] = layout
-            bind_index += 1
+            log.infof("Binding: %v / %v", binding, len(binding_layouts))
+            bindings[binding] = layout
         }
+        offsets[set] = make([]vk.DeviceSize, len(binding_layouts))
 
-        log.debugf("Bindings: %v", bindings)
         set_layout_info:= vk.DescriptorSetLayoutCreateInfo {
             sType = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            flags = {.DESCRIPTOR_BUFFER_EXT},
             bindingCount = u32(len(bindings)),
             pBindings = raw_data(bindings),
         }
         set_layout : vk.DescriptorSetLayout
         vk_check(vk.CreateDescriptorSetLayout(vk_device, &set_layout_info, nil, &set_layout)) or_return
 
-        set_layouts[set_index] = set_layout
-        set_index += 1
+        set_layouts[set] = set_layout
+        for i in 0..<len(binding_layouts) {
+            offset: vk.DeviceSize 
+            vk.GetDescriptorSetLayoutBindingOffsetEXT(vk_device, set_layout, u32(i), &offset)
+            offsets[set][i] = offset
+        }
     }
-
+    log.infof("Offsets: %v", offsets)
     pipeline_layout_info := vk.PipelineLayoutCreateInfo {
         sType = .PIPELINE_LAYOUT_CREATE_INFO,
         setLayoutCount = u32(len(set_layouts)),
@@ -826,5 +837,5 @@ generate_vk_layout :: proc(vk_device: vk.Device, layout: ^Reflected_Shaders) ->(
 
     vk_check(vk.CreatePipelineLayout(vk_device, &pipeline_layout_info, nil, &pipeline_layout)) or_return
 
-    return pipeline_layout, true
+    return pipeline_layout, offsets, true
 }
