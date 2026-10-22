@@ -16,6 +16,7 @@ Allocated_Image :: struct {
     image_format: vk.Format,
     allocator: vma.Allocator,
     allocation: vma.Allocation,
+     
 }
 
 is_depth_format :: proc(format: vk.Format) -> bool {

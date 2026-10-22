@@ -9,10 +9,13 @@ import vma "libs:vma"
 import vk "vendor:vulkan"
 
 Allocated_Buffer :: struct {
+    size: vk.DeviceSize,
     buffer: vk.Buffer,
     info: vma.AllocationInfo,
     allocation: vma.Allocation,
-    allocator: vma.Allocator,
+    allocator: vma.Allocator, 
+    device_address: vk.DeviceAddress,
+    mapped_ptr: rawptr,
 }
 
 Vertex :: struct {
@@ -111,6 +114,7 @@ upload_mesh :: proc(self: ^Engine, indices: []u32, vertices: []Vertex,) -> (
              return true
          }
          log.errorf("[Vulkan Error] %s: %v: loc:%v", message, res, loc)
+         runtime.debug_trap()
          return false
 }
  
@@ -128,7 +132,7 @@ create_buffer :: proc(self: ^Engine, alloc_size: vk.DeviceSize, usage: vk.Buffer
     new_buffer.allocator = self.vma_allocator
 
     vk_check(vma.CreateBuffer(self.vma_allocator, buffer_info, vma_alloc_info, &new_buffer.buffer, &new_buffer.allocation, &new_buffer.info),) or_return
-
+    new_buffer.size = alloc_size
     return new_buffer, true
 }
 

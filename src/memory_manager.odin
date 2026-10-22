@@ -4,12 +4,13 @@ package astro
 import "base:intrinsics"
 import "core:mem"
 import "core:log"
-
+import "base:runtime"
 
 import vk "vendor:vulkan"
 import "libs:vma"
 
 FRAME_UNIFORM_SIZE :: mem.Kilobyte
+ARENA_SIZE :: mem.Kilobyte * 128
 TEXTURE_BUFFER_CAPACITY :: 1024
 BUFFERING_DEPTH:: 3
 
@@ -48,13 +49,12 @@ Uniform_Buffer :: struct {
 
     total_allocation_offset: vk.DeviceSize,
     shadow_buffer_ptr: rawptr,
-    ring_buffer_ptr: rawptr,
     frame_ptr: rawptr,
     frame_index: u32,
-    ring_buffer: vk.Buffer,
-    ring_allocation: vma.Allocation,
-    ring_info: vma.AllocationInfo,
+    
+    ring_buffer: Allocated_Buffer,
 
+    buffering_depth: u32, 
     frame_buffer_size: vk.DeviceSize,
     total_buffer_size: vk.DeviceSize,
 }
@@ -63,17 +63,19 @@ Texture_Heap :: struct {
     size: u32,
     next_index: u32,
     freed_indexes: [dynamic] u32,
-    pipeline_layout: vk.PipelineLayout,
-    layout_size: vk.DeviceSize,
-    layout_binding_offset: vk.DeviceSize,
-    layout: vk.DescriptorSetLayout,
-    descriptor_size: int,
+    pipeline_layout2: Pipeline_Layout2,
 
-    buffer: vk.Buffer,
-    allocation: vma.Allocation,
-    allocation_info: vma.AllocationInfo,
-    device_address: vk.DeviceAddress,
-    mapped_ptr: rawptr,
+    descriptor_size: int,
+    bind_info: vk.DescriptorBufferBindingInfoEXT,
+    buffer: Allocated_Buffer,
+}
+Descriptor_Arena:: struct {
+    size: vk.DeviceSize,
+    bump_offset: vk.DeviceSize,
+    alignment: vk.DeviceSize,
+    
+    bind_info: vk.DescriptorBufferBindingInfoEXT,
+    buffer: Allocated_Buffer,
 }
 
 Memory_Manager :: struct {
@@ -81,13 +83,18 @@ Memory_Manager :: struct {
     MIN_UNIFORM_ALIGNMENT: vk.DeviceSize,
     vma_allocator: vma.Allocator,
     device_limits: vk.PhysicalDeviceLimits,
+    physical_device: ^Physical_Device,
     uniform : Uniform_Buffer,
     texture_heap: Texture_Heap,
+    descriptor_arena: Descriptor_Arena,
+    universal_layout: Set_Layout,
 }
 
-memory_manager_init :: proc(self:^ Memory_Manager, engine: ^Engine)->(ok:bool) {
 
+memory_manager_init :: proc(self:^ Memory_Manager, engine: ^Engine)->(ok:bool) {
+    
     self.vk_device = engine.vk_device
+    self.physical_device = &engine.vk_context.physical_device
     self.device_limits = engine.vk_context.physical_device.properties.limits
     device_vtable: vk.Device_VTable
     vk.load_proc_addresses_device_vtable(engine.vk_device, &device_vtable)
@@ -109,19 +116,22 @@ memory_manager_init :: proc(self:^ Memory_Manager, engine: ^Engine)->(ok:bool) {
 
     vk_check(vma.CreateAllocator(vma_create_info, &self.vma_allocator), "Failed to create VMA Allocator") or_return
 
+    deletion_queue_push(&engine.main_deletion_queue, self.vma_allocator)
+
     init_uniform_buffers(self, engine) or_return
     init_texture_heap(self, engine) or_return
-
+    init_descriptor_arena(self, engine) or_return
+    self.universal_layout = self.texture_heap.pipeline_layout2.set_layouts[0]
     return true
 }
 
 @(private="file")
 init_uniform_buffers:: proc(self:^Memory_Manager, engine: ^Engine) ->(ok:bool,) {
 
-
-    deletion_queue_push(&engine.main_deletion_queue, self.vma_allocator)
-    self.uniform.frame_buffer_size = get_aligned_memory_size(self, FRAME_UNIFORM_SIZE) 
-    self.uniform.total_buffer_size = self.uniform.frame_buffer_size * BUFFERING_DEPTH
+    buffer:= &self.uniform.ring_buffer
+    self.uniform.buffering_depth = BUFFERING_DEPTH
+    self.uniform.frame_buffer_size = get_aligned_uniform_size(self, FRAME_UNIFORM_SIZE) 
+    self.uniform.total_buffer_size = self.uniform.frame_buffer_size * self.uniform.buffering_depth 
     buffer_info := vk.BufferCreateInfo {
         sType = .BUFFER_CREATE_INFO,
         size = self.uniform.total_buffer_size,
@@ -132,24 +142,22 @@ init_uniform_buffers:: proc(self:^Memory_Manager, engine: ^Engine) ->(ok:bool,) 
         flags = {.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
     }
 
-    vk_check(vma.CreateBuffer(self.vma_allocator, buffer_info, alloc_info, &self.uniform.ring_buffer, &self.uniform.ring_allocation, &self.uniform.ring_info), "Failed to create VMA Ring Buffer") or_return
-    deletion_queue_push(&engine.main_deletion_queue, Allocated_Buffer {
-        buffer = self.uniform.ring_buffer,
-        info = self.uniform.ring_info,
-        allocation = self.uniform.ring_allocation,
-        allocator = self.vma_allocator,
-    })
-    self.uniform.ring_buffer_ptr = self.uniform.ring_info.pMappedData
+    vk_check(vma.CreateBuffer(self.vma_allocator, buffer_info, alloc_info, &buffer.buffer, &buffer.allocation, &buffer.info), "Failed to create VMA Ring Buffer") or_return
+
+    buffer.mapped_ptr = buffer.info.pMappedData
 
     shadow_buffer, err:= mem.alloc(int(self.uniform.frame_buffer_size), int(self.MIN_UNIFORM_ALIGNMENT), context.allocator)
     if err != mem.Allocator_Error.None {
         log.errorf("Failed to allocate shadow buffer.")
         return false
     }
-    deletion_queue_push(&engine.main_deletion_queue, Raw_Memory{ptr = shadow_buffer, allocator = context.allocator, size = u32(self.uniform.frame_buffer_size)})
     self.uniform.shadow_buffer_ptr = shadow_buffer
-    self.uniform.frame_ptr = self.uniform.ring_buffer_ptr
+    self.uniform.frame_ptr = buffer.mapped_ptr
 
+    buffer.allocator = self.vma_allocator
+    buffer.size = self.uniform.total_buffer_size
+    deletion_queue_push(&engine.main_deletion_queue, Raw_Memory{ptr = shadow_buffer, allocator = context.allocator, size = u32(self.uniform.frame_buffer_size)})
+    deletion_queue_push(&engine.main_deletion_queue, buffer^)    
     return true
 }
 
@@ -184,16 +192,16 @@ init_texture_heap :: proc(self:^Memory_Manager, engine:^Engine) ->(ok:bool,) {
         bindingCount = 1,
         pBindings = &binding,
     }
-
+    self.texture_heap.pipeline_layout2.set_layouts = make([]Set_Layout, 1)
     vk_check(vk.CreateDescriptorSetLayout(
             self.vk_device,
-            &layout_info,
+            &layout_info,   
             nil,
-            &self.texture_heap.layout), "Failed to create Texture[] descriptors") or_return
-    deletion_queue_push(&engine.main_deletion_queue, self.texture_heap.layout)
+            &self.texture_heap.pipeline_layout2.set_layouts[0].vk_layout), "Failed to create Texture[] descriptors") or_return
 
-    vk.GetDescriptorSetLayoutSizeEXT(self.vk_device, self.texture_heap.layout, &self.texture_heap.layout_size)
-    vk.GetDescriptorSetLayoutBindingOffsetEXT(self.vk_device, self.texture_heap.layout, 0, &self.texture_heap.layout_binding_offset)
+    vk.GetDescriptorSetLayoutSizeEXT(self.vk_device, self.texture_heap.pipeline_layout2.set_layouts[0].vk_layout, &self.texture_heap.pipeline_layout2.set_layouts[0].total_set_size)
+    self.texture_heap.pipeline_layout2.set_layouts[0].binding_offsets = make([]vk.DeviceSize, 1)
+    vk.GetDescriptorSetLayoutBindingOffsetEXT(self.vk_device,  self.texture_heap.pipeline_layout2.set_layouts[0].vk_layout, 0, &self.texture_heap.pipeline_layout2.set_layouts[0].binding_offsets[0])
 
 
     push_constants_range := vk.PushConstantRange{
@@ -204,17 +212,17 @@ init_texture_heap :: proc(self:^Memory_Manager, engine:^Engine) ->(ok:bool,) {
     pipeline_layout_info := vk.PipelineLayoutCreateInfo {
         sType = .PIPELINE_LAYOUT_CREATE_INFO,
         setLayoutCount = 1,
-        pSetLayouts = &self.texture_heap.layout,
+        pSetLayouts = &self.texture_heap.pipeline_layout2.set_layouts[0].vk_layout,
         pushConstantRangeCount = 1, 
         pPushConstantRanges =  &push_constants_range,
     }
 
-    vk_check(vk.CreatePipelineLayout(self.vk_device, &pipeline_layout_info, nil, &self.texture_heap.pipeline_layout), "Failed to create Master Pipeline Layout") or_return
-    deletion_queue_push(&engine.main_deletion_queue, self.texture_heap.pipeline_layout)
+    vk_check(vk.CreatePipelineLayout(self.vk_device, &pipeline_layout_info, nil, &self.texture_heap.pipeline_layout2.vk_layout), "Failed to create Master Pipeline Layout") or_return
+    deletion_queue_push(&engine.main_deletion_queue, self.texture_heap.pipeline_layout2.vk_layout)
 
     buffer_info := vk.BufferCreateInfo {
         sType = .BUFFER_CREATE_INFO,
-        size = self.texture_heap.layout_size,
+        size = self.texture_heap.pipeline_layout2.set_layouts[0].total_set_size,
         usage = {.RESOURCE_DESCRIPTOR_BUFFER_EXT, .SHADER_DEVICE_ADDRESS},
     }
     alloc_info := vma.AllocationCreateInfo {
@@ -222,27 +230,76 @@ init_texture_heap :: proc(self:^Memory_Manager, engine:^Engine) ->(ok:bool,) {
         flags = {.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
     }
 
-
-    vk_check(vma.CreateBuffer(self.vma_allocator, buffer_info, alloc_info, &self.texture_heap.buffer, &self.texture_heap.allocation, &self.texture_heap.allocation_info), "Failed to create VMA Texture heap buffer") or_return
-    deletion_queue_push(&engine.main_deletion_queue, Allocated_Buffer {
-        buffer = self.texture_heap.buffer,
-        info = self.texture_heap.allocation_info,
-        allocation = self.texture_heap.allocation,
-        allocator = self.vma_allocator,
-    })
+    buffer:= &self.texture_heap.buffer
+    vk_check(vma.CreateBuffer(self.vma_allocator, buffer_info, alloc_info, &buffer.buffer, &buffer.allocation, &buffer.info), "Failed to create VMA Texture heap buffer") or_return
 
     device_address_info := vk.BufferDeviceAddressInfo {
         sType = .BUFFER_DEVICE_ADDRESS_INFO,
-        buffer = self.texture_heap.buffer,
+        buffer = buffer.buffer,
     }
-    self.texture_heap.device_address = vk.GetBufferDeviceAddress(self.vk_device, &device_address_info)
-    self.texture_heap.mapped_ptr = self.texture_heap.allocation_info.pMappedData
+    buffer.device_address = vk.GetBufferDeviceAddress(self.vk_device, &device_address_info)
+    buffer.mapped_ptr = buffer.info.pMappedData
     self.texture_heap.descriptor_size = engine.vk_context.physical_device.properties_buffer.sampledImageDescriptorSize
+    buffer.allocator = self.vma_allocator
+    self.texture_heap.bind_info = vk.DescriptorBufferBindingInfoEXT {
+        sType = .DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
+        address = buffer.device_address,
+        usage = {
+            .RESOURCE_DESCRIPTOR_BUFFER_EXT,
+        }
+    }
 
+    buffer.size = self.texture_heap.pipeline_layout2.set_layouts[0].total_set_size
 
+    deletion_queue_push(&engine.main_deletion_queue, self.texture_heap.pipeline_layout2.set_layouts[0].vk_layout)
+    deletion_queue_push(&engine.main_deletion_queue, buffer^)
     return true
 }
 
+@(private="file")
+init_descriptor_arena :: proc(self:^Memory_Manager, engine:^Engine) ->(ok:bool,) {
+    
+    arena := &self.descriptor_arena
+    arena.size = vk.DeviceSize(ARENA_SIZE)
+    buffer:= &arena.buffer
+    arena.alignment = engine.vk_context.physical_device.properties_buffer.descriptorBufferOffsetAlignment
+    
+    buffer_info := vk.BufferCreateInfo {
+        sType = .BUFFER_CREATE_INFO,
+        size = arena.size,
+        usage = {
+            .RESOURCE_DESCRIPTOR_BUFFER_EXT,
+            .SHADER_DEVICE_ADDRESS,
+        },
+    }
+    alloc_info := vma.AllocationCreateInfo {
+        usage = .AUTO,
+        flags = {
+            .HOST_ACCESS_SEQUENTIAL_WRITE,
+            .MAPPED,
+        }
+    }
+    vk_check(vma.CreateBuffer(self.vma_allocator, buffer_info, alloc_info, &buffer.buffer, &buffer.allocation, &buffer.info), "Failed to create the general Descriptor Arena buffer") or_return
+
+    address_info := vk.BufferDeviceAddressInfo {
+        sType = .BUFFER_DEVICE_ADDRESS_INFO,
+        buffer = buffer.buffer,
+    }
+    buffer.device_address = vk.GetBufferDeviceAddress(self.vk_device, &address_info)
+    buffer.mapped_ptr = buffer.info.pMappedData
+    buffer.allocator = self.vma_allocator
+
+    self.descriptor_arena.bind_info = vk.DescriptorBufferBindingInfoEXT {
+        sType = .DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
+        address = buffer.device_address,
+        usage = {
+            .RESOURCE_DESCRIPTOR_BUFFER_EXT,
+        }
+    }
+    buffer.size = arena.size
+    deletion_queue_push(&engine.main_deletion_queue, buffer^)
+    return true
+}
 
 memory_manager_bind_self :: proc(self:^ Memory_Manager, cmd: vk.CommandBuffer) {
     //
@@ -262,21 +319,21 @@ memory_manager_advance_frame :: proc(self: ^Memory_Manager) {
     self.uniform.frame_index += 1
     self.uniform.frame_index = self.uniform.frame_index % BUFFERING_DEPTH 
 
-    self.uniform.frame_ptr = ptr_offset(self.uniform.ring_buffer_ptr, self.uniform.frame_buffer_size)
+    self.uniform.frame_ptr = ptr_offset(self.uniform.ring_buffer.mapped_ptr, self.uniform.frame_buffer_size)
 
 
 }
 
 memory_manager_bind_uniform :: proc(self: ^Memory_Manager, size: u32) -> (memref:Memory_Reference) {
     
-    memref.size = get_aligned_memory_size(self, cast(vk.DeviceSize)size)
+    memref.size = get_aligned_uniform_size(self, cast(vk.DeviceSize)size)
     memref.pointer = ptr_offset(self.uniform.shadow_buffer_ptr, self.uniform.total_allocation_offset) 
     self.uniform.total_allocation_offset += memref.size
     assert(memref.pointer != nil, "Bad pointer binding")
     return memref 
 }
 
-get_aligned_memory_size :: proc(self: ^Memory_Manager, data_size: vk.DeviceSize) -> vk.DeviceSize{
+get_aligned_uniform_size :: proc(self: ^Memory_Manager, data_size: vk.DeviceSize) -> vk.DeviceSize{
 /*
     Only works on powers of 2 which is guaranteed to be the case for this type of data
     We add nearly a full chunk(ex. 16), this ensures that if we're at 15 bytes of a 16 byte chunk we add (16-1) more bytes so that we actually round up. 
@@ -294,6 +351,10 @@ get_aligned_memory_size :: proc(self: ^Memory_Manager, data_size: vk.DeviceSize)
     */
     return (data_size + self.MIN_UNIFORM_ALIGNMENT - 1) & (~(self.MIN_UNIFORM_ALIGNMENT - 1))
 }
+@(private="file")
+get_aligned_arena_start :: proc(self:^Memory_Manager) -> vk.DeviceSize {
+    return (self.descriptor_arena.bump_offset + self.descriptor_arena.alignment - 1) & ~(self.descriptor_arena.alignment - 1)
+}
 
 ptr_offset :: proc {
     ptr_offset_vk,
@@ -308,7 +369,7 @@ ptr_offset_raw :: proc(ptr:rawptr, offset:uint) -> rawptr {
 }
 
 
-memory_manager_add_texture_to_heap :: proc(self:^ Memory_Manager, image: Allocated_Image) ->(texture_reference: Texture_Reference, ok:bool,) {
+memory_manager_register_texture :: proc(self:^ Memory_Manager, image: Allocated_Image) ->(texture_reference: Texture_Reference, ok:bool,) {
  
     if len(self.texture_heap.freed_indexes) > 0 {
         texture_reference.index = pop(&self.texture_heap.freed_indexes)
@@ -331,7 +392,7 @@ memory_manager_add_texture_to_heap :: proc(self:^ Memory_Manager, image: Allocat
         data = {pSampledImage = &descriptor_image_info},
     }
 
-    dst := ptr_offset(self.texture_heap.mapped_ptr, self.texture_heap.layout_binding_offset + vk.DeviceSize(texture_reference.index) * vk.DeviceSize(self.texture_heap.descriptor_size))
+    dst := ptr_offset(self.texture_heap.buffer.mapped_ptr, self.texture_heap.pipeline_layout2.set_layouts[0].binding_offsets[0]+ vk.DeviceSize(texture_reference.index) * vk.DeviceSize(self.texture_heap.descriptor_size))
     vk.GetDescriptorEXT(self.vk_device, &get_info, self.texture_heap.descriptor_size, dst)
 
     if texture_reference.index == self.texture_heap.next_index{
@@ -339,7 +400,21 @@ memory_manager_add_texture_to_heap :: proc(self:^ Memory_Manager, image: Allocat
     }
 
     return texture_reference, true
+}
 
+memory_manager_register_descriptor :: proc(self:^Memory_Manager, size:vk.DeviceSize, loc:=#caller_location) ->vk.DeviceSize {
+    
+    log.infof("Allocating Arena Memory: %v", loc)
+    start := get_aligned_arena_start(self) 
+    assert(start + size <= self.descriptor_arena.size, "Descriptor Arena full, sucks to suck") 
+    self.descriptor_arena.bump_offset = start + size
+    return start
+}
+memory_manager_register_set_descriptor :: proc(self:^ Memory_Manager, layout: Set_Layout, loc:=#caller_location) -> vk.DeviceSize {
+    return memory_manager_register_descriptor(self, layout.total_set_size, loc)
+}
+memory_manager_register_set_descriptor_ring :: proc(self:^ Memory_Manager, layout: Set_Layout, loc:=#caller_location) -> vk.DeviceSize {
+    return memory_manager_register_descriptor(self, layout.total_set_size * vk.DeviceSize(self.uniform.buffering_depth), loc)
 }
 // create_ping_pong_images :: proc(self:^Memory_Manager,
 //     extent: vk.Extent3D,
@@ -354,3 +429,18 @@ memory_manager_add_texture_to_heap :: proc(self:^ Memory_Manager, image: Allocat
 //
 
 
+get_descriptor_size :: proc(self: ^Memory_Manager, descriptor: vk.DescriptorType) ->(int) {
+    
+    #partial switch descriptor {
+        case .UNIFORM_BUFFER:
+            return self.physical_device.properties_buffer.uniformBufferDescriptorSize
+        case .STORAGE_BUFFER:
+            return self.physical_device.properties_buffer.storageBufferDescriptorSize
+        case .STORAGE_IMAGE:
+            return self.physical_device.properties_buffer.storageImageDescriptorSize
+    }
+    log.errorf("Dont have size info for: %v", descriptor)
+    runtime.panic("Shouldn't have made it here, it means we don't have the size for the type")
+    // return 0
+
+}

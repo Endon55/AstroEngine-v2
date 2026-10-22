@@ -505,7 +505,6 @@ default_debug_callback :: proc "system" (message_severity: vk.DebugUtilsMessageS
             log.errorf("%v", strings.trim_space(str))
         }
         print_stack_trace()
-        runtime.debug_trap()
     } else {
         log.infof("[%v]: %s", message_types, p_callback_data.pMessage)
     }

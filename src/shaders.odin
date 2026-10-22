@@ -527,6 +527,10 @@ Render_Shaders :: struct {
     fragment: Shader,
 }
 
+Compute_Shaders :: struct {
+    compute: Shader,
+}
+
 Stage_Params :: struct {
     stage: vk.ShaderStageFlag,
     input_count: u32,
@@ -542,10 +546,16 @@ Reflected_Shaders :: struct {
     push_constants: [dynamic]vk.PushConstantRange,
     stage_params: [dynamic]Stage_Params,
 }
+Pipeline_Layout2 :: struct {
+    sets: u32,
+    set_layouts: []Set_Layout,
+    vk_layout: vk.PipelineLayout,
+}
 
-
-Compute_Shaders :: struct {
-    compute: Shader,
+Set_Layout :: struct {
+    total_set_size: vk.DeviceSize,
+    binding_offsets: []vk.DeviceSize,
+    vk_layout: vk.DescriptorSetLayout,
 }
 
 @(private="file")
@@ -557,8 +567,8 @@ validate_input_outputs :: proc(stage_params:^[dynamic]Stage_Params) ->(ok:bool,)
     for i in 0..<count -1 {
         current:= stage_params[i]
         next:= stage_params[i + 1]
-        found: bool
         for output_index in 0..< current.output_count {
+            found: bool
             output := current.outputs[output_index]
             if output.built_in != -1 || output.location == bits.U32_MAX do continue
 
@@ -786,47 +796,67 @@ shaders_generate_raw_layout_compute :: proc(vk_device: vk.Device, compute_shader
     return layout, true
 }
 
-generate_vk_layout :: proc(vk_device: vk.Device, layout: ^Reflected_Shaders) ->(pipeline_layout:vk.PipelineLayout, offsets:[][]vk.DeviceSize, ok:bool,) {
+generate_vk_layout :: proc(vk_device: vk.Device, universal_layout: Set_Layout, layout: ^Reflected_Shaders) ->(p_layout: Pipeline_Layout2, ok:bool,) {
 
     validate_input_outputs(&layout.stage_params) or_return
     
+    /*
+        For now we don't support sparse binding. That might change if the need arises later, but for now it's unnecessary.
+        Sparse meaning, using set 0,2 but skipping 1. Same with bindings.
+     */
+    if 0 not_in layout.layout
+    {
+        layout.layout[0] = {} 
+    }
     set_layouts := make([]vk.DescriptorSetLayout, len(layout.layout))
     defer {
         // The pipeline layout keeps what it needs, so the set layouts aren't needed past this proc.
-        for set_layout in set_layouts {
+        for i in 1..< len(set_layouts) {
+            set_layout := set_layouts[i]
             if set_layout != 0 {
                 vk.DestroyDescriptorSetLayout(vk_device, set_layout, nil)
             }
         }
         delete(set_layouts)
     }
-    offsets = make([][]vk.DeviceSize, len(layout.layout))
+    p_layout.sets = u32(len(layout.layout))
+    p_layout.set_layouts = make([]Set_Layout, p_layout.sets)
     for set, binding_layouts in layout.layout {
-        bindings := make([]vk.DescriptorSetLayoutBinding, len(binding_layouts))
-        defer delete(bindings)
-        for binding, layout in binding_layouts {
-            log.infof("Binding: %v / %v", binding, len(binding_layouts))
-            bindings[binding] = layout
-        }
-        offsets[set] = make([]vk.DeviceSize, len(binding_layouts))
+        assert(set < u32(len(layout.layout)))
 
-        set_layout_info:= vk.DescriptorSetLayoutCreateInfo {
-            sType = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            flags = {.DESCRIPTOR_BUFFER_EXT},
-            bindingCount = u32(len(bindings)),
-            pBindings = raw_data(bindings),
-        }
-        set_layout : vk.DescriptorSetLayout
-        vk_check(vk.CreateDescriptorSetLayout(vk_device, &set_layout_info, nil, &set_layout)) or_return
 
-        set_layouts[set] = set_layout
-        for i in 0..<len(binding_layouts) {
-            offset: vk.DeviceSize 
-            vk.GetDescriptorSetLayoutBindingOffsetEXT(vk_device, set_layout, u32(i), &offset)
-            offsets[set][i] = offset
+        if set == 0 { //Use Universal texture buffer binding.
+            set_layouts[0] = universal_layout.vk_layout
+            p_layout.set_layouts[0] = universal_layout
+        } else {
+
+            bindings := make([]vk.DescriptorSetLayoutBinding, len(binding_layouts))
+            defer delete(bindings)
+            for binding, layout in binding_layouts {
+                log.infof("Binding: %v / %v", binding, len(binding_layouts))
+                bindings[binding] = layout
+            }
+            p_layout.set_layouts[set].binding_offsets = make([]vk.DeviceSize, len(binding_layouts))
+
+            set_layout_info:= vk.DescriptorSetLayoutCreateInfo {
+                sType = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                flags = {.DESCRIPTOR_BUFFER_EXT},
+                bindingCount = u32(len(bindings)),
+                pBindings = raw_data(bindings),
+            }
+            vk_check(vk.CreateDescriptorSetLayout(vk_device, &set_layout_info, nil, &p_layout.set_layouts[set].vk_layout)) or_return
+
+            vk.GetDescriptorSetLayoutSizeEXT(vk_device, p_layout.set_layouts[set].vk_layout, &p_layout.set_layouts[set].total_set_size)
+            log.infof("Set: %v, Bindings: uv",set, len(binding_layouts))
+            for i in 0..<len(binding_layouts) {
+
+                vk.GetDescriptorSetLayoutBindingOffsetEXT(vk_device, p_layout.set_layouts[set].vk_layout, u32(i), &p_layout.set_layouts[set].binding_offsets[i])
+            }
+            set_layouts[set] = p_layout.set_layouts[set].vk_layout
         }
+
+        log.infof("Set: %v, Offsets: %v", set, p_layout.set_layouts[set].binding_offsets)
     }
-    log.infof("Offsets: %v", offsets)
     pipeline_layout_info := vk.PipelineLayoutCreateInfo {
         sType = .PIPELINE_LAYOUT_CREATE_INFO,
         setLayoutCount = u32(len(set_layouts)),
@@ -835,7 +865,7 @@ generate_vk_layout :: proc(vk_device: vk.Device, layout: ^Reflected_Shaders) ->(
         pPushConstantRanges =  raw_data(layout.push_constants),
     }
 
-    vk_check(vk.CreatePipelineLayout(vk_device, &pipeline_layout_info, nil, &pipeline_layout)) or_return
+    vk_check(vk.CreatePipelineLayout(vk_device, &pipeline_layout_info, nil, &p_layout.vk_layout)) or_return
 
-    return pipeline_layout, offsets, true
+    return p_layout, true
 }
