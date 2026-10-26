@@ -546,16 +546,30 @@ Reflected_Shaders :: struct {
     push_constants: [dynamic]vk.PushConstantRange,
     stage_params: [dynamic]Stage_Params,
 }
+
 Pipeline_Layout2 :: struct {
     sets: u32,
     set_layouts: []Set_Layout,
     vk_layout: vk.PipelineLayout,
 }
 
+Set_Memory :: struct {
+    root_memory_block: vk.DeviceAddress,
+    offset_into_block: vk.DeviceSize,
+    set_size: vk.DeviceSize,
+    frames_buffered: vk.DeviceSize,
+}
+
 Set_Layout :: struct {
     total_set_size: vk.DeviceSize,
-    binding_offsets: []vk.DeviceSize,
+    binding_layouts: []Binding_Layout,
     vk_layout: vk.DescriptorSetLayout,
+}
+Binding_Layout :: struct {
+    binding_size: vk.DeviceSize,
+    offset: vk.DeviceSize,
+    vk_layout: vk.DescriptorSetLayoutBinding,
+    type: vk.DescriptorType,
 }
 
 @(private="file")
@@ -687,6 +701,7 @@ shaders_generate_layout_raw :: proc(reflect_layout: ^Reflected_Shaders, shader: 
     }
     stage_params.stage = stage
     return true
+
 }
 
 print_inputs :: proc(inputs: []^spirv.SpvReflectInterfaceVariable, count: u32, levels: u32) {
@@ -809,21 +824,11 @@ generate_vk_layout :: proc(vk_device: vk.Device, universal_layout: Set_Layout, l
         layout.layout[0] = {} 
     }
     set_layouts := make([]vk.DescriptorSetLayout, len(layout.layout))
-    defer {
-        // The pipeline layout keeps what it needs, so the set layouts aren't needed past this proc.
-        for i in 1..< len(set_layouts) {
-            set_layout := set_layouts[i]
-            if set_layout != 0 {
-                vk.DestroyDescriptorSetLayout(vk_device, set_layout, nil)
-            }
-        }
-        delete(set_layouts)
-    }
+
     p_layout.sets = u32(len(layout.layout))
     p_layout.set_layouts = make([]Set_Layout, p_layout.sets)
     for set, binding_layouts in layout.layout {
         assert(set < u32(len(layout.layout)))
-
 
         if set == 0 { //Use Universal texture buffer binding.
             set_layouts[0] = universal_layout.vk_layout
@@ -831,12 +836,16 @@ generate_vk_layout :: proc(vk_device: vk.Device, universal_layout: Set_Layout, l
         } else {
 
             bindings := make([]vk.DescriptorSetLayoutBinding, len(binding_layouts))
+            p_layout.set_layouts[set].binding_layouts = make([]Binding_Layout, len(binding_layouts))
             defer delete(bindings)
             for binding, layout in binding_layouts {
                 log.infof("Binding: %v / %v", binding, len(binding_layouts))
                 bindings[binding] = layout
+                p_layout.set_layouts[set].binding_layouts[binding] = {
+                   vk_layout = layout, 
+                   type = layout.descriptorType,
+                }
             }
-            p_layout.set_layouts[set].binding_offsets = make([]vk.DeviceSize, len(binding_layouts))
 
             set_layout_info:= vk.DescriptorSetLayoutCreateInfo {
                 sType = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -847,15 +856,15 @@ generate_vk_layout :: proc(vk_device: vk.Device, universal_layout: Set_Layout, l
             vk_check(vk.CreateDescriptorSetLayout(vk_device, &set_layout_info, nil, &p_layout.set_layouts[set].vk_layout)) or_return
 
             vk.GetDescriptorSetLayoutSizeEXT(vk_device, p_layout.set_layouts[set].vk_layout, &p_layout.set_layouts[set].total_set_size)
-            log.infof("Set: %v, Bindings: uv",set, len(binding_layouts))
+            log.infof("Set: %v, Bindings: %v",set, len(binding_layouts))
             for i in 0..<len(binding_layouts) {
 
-                vk.GetDescriptorSetLayoutBindingOffsetEXT(vk_device, p_layout.set_layouts[set].vk_layout, u32(i), &p_layout.set_layouts[set].binding_offsets[i])
+                vk.GetDescriptorSetLayoutBindingOffsetEXT(vk_device, p_layout.set_layouts[set].vk_layout, u32(i), &p_layout.set_layouts[set].binding_layouts[i].offset)
             }
             set_layouts[set] = p_layout.set_layouts[set].vk_layout
         }
 
-        log.infof("Set: %v, Offsets: %v", set, p_layout.set_layouts[set].binding_offsets)
+        log.infof("Set: %v, Offsets: %v", set, p_layout.set_layouts[set].binding_layouts)
     }
     pipeline_layout_info := vk.PipelineLayoutCreateInfo {
         sType = .PIPELINE_LAYOUT_CREATE_INFO,

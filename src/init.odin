@@ -16,7 +16,7 @@ import vma "libs:vma"
 
 
 engine_start :: proc() ->(ok:bool){
-
+    assert(DATA_FRAMES_BUFFERED > SWAPCHAIN_FRAMES_BUFFERED, "SWAPCHAIN and DATA frame count are incompatible")
     when ODIN_DEBUG {
         context.logger = log.create_console_logger(opt = {.Level, .Terminal_Color}, ident = "ENGINE")
         defer log.destroy_console_logger(context.logger)

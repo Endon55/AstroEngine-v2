@@ -15,7 +15,7 @@ import vma "libs:vma"
 TITLE :: "Astro Engine v2"
 DEFAULT_WINDOW_EXTENT :: vk.Extent2D{1280, 678}
 DEFAULT_BACKGROUND :: Compute_Effect_Kind(.Sky)
-FRAME_OVERLAP :: 2
+SWAPCHAIN_FRAMES_BUFFERED :: 2
 DEFAULT_ALLOCATOR : runtime.Allocator
 ENGINE_ALLOCATOR : runtime.Allocator
 
@@ -52,7 +52,7 @@ Engine::struct {
     swapchain_image_views: []vk.ImageView,
     swapchain_image_semaphores: []vk.Semaphore,
 
-    frames: [FRAME_OVERLAP] Frame_Data,
+    frames: [SWAPCHAIN_FRAMES_BUFFERED] Frame_Data,
     frame_number: int,
     graphics_queue: vk.Queue,
     graphics_queue_family: u32,
@@ -143,7 +143,7 @@ g_logger: log.Logger
 
 //The modulous here isn't that expensive since FRAME_OVERLAP is a power of 2
 engine_get_current_frame :: #force_inline proc(self: ^Engine) -> ^Frame_Data #no_bounds_check {
-    return &self.frames[self.frame_number % FRAME_OVERLAP]
+    return &self.frames[self.frame_number % SWAPCHAIN_FRAMES_BUFFERED]
 }
 
 engine_update_scene :: proc(self: ^Engine) {
@@ -231,6 +231,7 @@ engine_run :: proc(self: ^Engine) -> (ok: bool) {
         shader_manager_update(&self.shader_manager, self)
         game_manager_update(&self.game_manager, self)
         game_manager_game_update(&self.game_manager, &self.scene, self, f32(t.delta_time))
+        memory_manager_advance_frame(&self.memory_manager)
         engine_draw(self) or_return
 
         when ODIN_DEBUG {
