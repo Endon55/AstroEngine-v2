@@ -40,6 +40,8 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
     }
     vk.CmdSetScissor(cmd, 0, 1, & scissor)
 
+    game_manager_game_render(&self.game_manager, &self.scene, self, cmd)
+
     gpu_scene_data_buffer := create_buffer(self, size_of(GPU_Scene_Data), {.UNIFORM_BUFFER}, .CPU_TO_GPU) or_return
 
     deletion_queue_push(&frame.deletion_queue, gpu_scene_data_buffer)

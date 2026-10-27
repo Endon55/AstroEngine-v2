@@ -388,7 +388,11 @@ shader_manager_update_shaders :: proc(self: ^Shader_Manager, shader_dir: ^Shader
         if out_of_date
         {
             log.debugf("shader(%v) is out of date: recompiling", shader.name)
-            spirv = shader_manager_compile_shader(self, shader_dir, shader.source_path) or_return
+            spirv, ok = shader_manager_compile_shader(self, shader_dir, shader.source_path) 
+            if !ok {
+                log.errorf("Failed to compile out of date shader(%v)", shader.name)
+                continue
+            }
         }
         else if self.compile_only {
             delete(shader.name)
@@ -578,40 +582,51 @@ validate_input_outputs :: proc(stage_params:^[dynamic]Stage_Params) ->(ok:bool,)
     if count == 0 || count == 1 {
         return true
     }
+
+     
+    //Inputs are the driving force. An output doesn't matter if there isn't an input to use it, and inputs get pruned by the compiler if they don't get used. This ordering prevents getting errors when for example the fragment shader doesn't use the uv's and they get removed, despite being defined in the spirv.
+    //TODO add a better check to this. It would be nice to drop a warning that "uv's arent used in .FRAGMENT"
     for i in 0..<count -1 {
         current:= stage_params[i]
         next:= stage_params[i + 1]
-        for output_index in 0..< current.output_count {
-            found: bool
-            output := current.outputs[output_index]
-            if output.built_in != -1 || output.location == bits.U32_MAX do continue
-
+     
             for input_index in 0..< next.input_count {
-                input := next.inputs[input_index]
 
-                if input.built_in != -1 || input.location == bits.U32_MAX do continue
+                input := next.inputs[input_index]
+            found: bool
+            if input.built_in != -1 || input.location == bits.U32_MAX do continue
+
+
+        for output_index in 0..< current.output_count {
+            output := current.outputs[output_index]
+                // log.debugf("Stage: %v, Input:%v, Location: %v, Format: %v", next.stage, input.name, input.location, input.format)
+                if output.built_in != -1 || output.location == bits.U32_MAX do continue
 
                 //They share a location
                 if output.location == input.location {
                     //now check if the types are the same.
                     if output.format != input.format {
-                        log.errorf("Formats don't match. Output(%v): %v, Input(%v): %v", current.stage, output.format, next.stage, input.format)
+                        // log.debugf("Formats don't match. Output(%v): %v, Input(%v): %v", current.stage, output.format, next.stage, input.format)
 
                         if (output.type_description != nil && output.type_description.op == spirv.SpvOp.TypeArray) || (input.type_description != nil && input.type_description.op == spirv.SpvOp.TypeArray) {
                             log.errorf("Ive got more info about out outputs/inputs and it's terminal. One of them is an array and we haven't implemented stripping that out yet. Godspeed homie.")
                         }
-
+                        // log.errorf("Stage: %v, Output:%v, Location: %v, Format: %v", current.stage, output.name, output.location, output.format)
+                        // log.errorf("Stage: %v, Input:%v, Location: %v, Format: %v", next.stage, input.name, input.location, input.format)
+                        log.errorf("They Share a location but the format is different")
                         return false
                     }
                     else {
-                        log.debugf("Found the binding Output(%v) -> Input(%v) at location(%v) is type: %v", current.stage, next.stage, output.location, output.format)
+                        //log.debugf("Found the binding Output(%v) -> Input(%v) at location(%v) is type: %v", current.stage, next.stage, output.location, output.format)
                         found = true
                     }
                     break
                 }
             }
             if !found {
-                log.errorf("Stage %v output at location %v doesn't have an equal location in Stage %v", current.stage, output.location, next.stage)
+                log.errorf("Stage: %v Input:%v Location: %v Format: %v doesn't have an equal location in Stage %v", next.stage, input.name, input.location, input.format, next.stage)
+                log.errorf("Double check that variables are used")
+                
                 return false
             }
 
@@ -824,6 +839,7 @@ generate_vk_layout :: proc(vk_device: vk.Device, universal_layout: Set_Layout, l
         layout.layout[0] = {} 
     }
     set_layouts := make([]vk.DescriptorSetLayout, len(layout.layout))
+    defer delete(set_layouts)
 
     p_layout.sets = u32(len(layout.layout))
     p_layout.set_layouts = make([]Set_Layout, p_layout.sets)
@@ -839,7 +855,7 @@ generate_vk_layout :: proc(vk_device: vk.Device, universal_layout: Set_Layout, l
             p_layout.set_layouts[set].binding_layouts = make([]Binding_Layout, len(binding_layouts))
             defer delete(bindings)
             for binding, layout in binding_layouts {
-                log.infof("Binding: %v / %v", binding, len(binding_layouts))
+                // log.infof("Binding: %v / %v", binding, len(binding_layouts))
                 bindings[binding] = layout
                 p_layout.set_layouts[set].binding_layouts[binding] = {
                    vk_layout = layout, 
@@ -864,7 +880,7 @@ generate_vk_layout :: proc(vk_device: vk.Device, universal_layout: Set_Layout, l
             set_layouts[set] = p_layout.set_layouts[set].vk_layout
         }
 
-        log.infof("Set: %v, Offsets: %v", set, p_layout.set_layouts[set].binding_layouts)
+        //log.infof("Set: %v, Offsets: %v", set, p_layout.set_layouts[set].binding_layouts)
     }
     pipeline_layout_info := vk.PipelineLayoutCreateInfo {
         sType = .PIPELINE_LAYOUT_CREATE_INFO,

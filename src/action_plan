@@ -1,0 +1,6 @@
+1. Create a rudamentary pbr shader.
+2. Create a simple material builder and material struct.
+    These are simply values just for the PBR. Anything using a custom 
+    fragment shader doesn't use this system.
+3. Update the graphics_pipeline_builder to have an option to use a pbr shader
+    and pass it the info. 

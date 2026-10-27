@@ -9,7 +9,7 @@ import "base:runtime"
 import vk "vendor:vulkan"
 import "libs:vma"
 
-FRAME_UNIFORM_SIZE :: mem.Kilobyte
+FRAME_UNIFORM_SIZE :: mem.Kilobyte * 4
 ARENA_SIZE :: mem.Kilobyte * 128
 TEXTURE_BUFFER_CAPACITY :: 1024
 DATA_FRAMES_BUFFERED:: 3
@@ -217,8 +217,11 @@ init_texture_heap :: proc(self:^Memory_Manager, engine:^Engine) ->(ok:bool,) {
             nil,
             &self.texture_heap.pipeline_layout2.set_layouts[0].vk_layout), "Failed to create Texture[] descriptors") or_return
 
+    deletion_queue_push(&engine.main_deletion_queue, Raw_Memory{ptr = raw_data(self.texture_heap.pipeline_layout2.set_layouts), allocator = context.allocator})
+
     vk.GetDescriptorSetLayoutSizeEXT(self.vk_device, self.texture_heap.pipeline_layout2.set_layouts[0].vk_layout, &self.texture_heap.pipeline_layout2.set_layouts[0].total_set_size)
     self.texture_heap.pipeline_layout2.set_layouts[0].binding_layouts= make([]Binding_Layout, 1)
+    deletion_queue_push(&engine.main_deletion_queue, Raw_Memory{ptr = raw_data(self.texture_heap.pipeline_layout2.set_layouts[0].binding_layouts), allocator = context.allocator})
     vk.GetDescriptorSetLayoutBindingOffsetEXT(self.vk_device,  self.texture_heap.pipeline_layout2.set_layouts[0].vk_layout, 0, &self.texture_heap.pipeline_layout2.set_layouts[0].binding_layouts[0].offset)
     self.texture_heap.pipeline_layout2.set_layouts[0].binding_layouts[0].vk_layout = binding
     self.texture_heap.pipeline_layout2.set_layouts[0].binding_layouts[0].type = binding.descriptorType 
@@ -429,7 +432,6 @@ memory_manager_register_texture :: proc(self:^ Memory_Manager, image: Allocated_
 
 memory_manager_register_descriptor :: proc(self:^Memory_Manager, size:vk.DeviceSize, frames_buffered: vk.DeviceSize = 1, loc:=#caller_location) -> (ref:Arena_Reference){
     
-    log.infof("Allocating Arena Memory: %v", loc)
     start := get_aligned_arena_start(self) 
     size_full:= size * frames_buffered
     assert(start + size_full <= self.descriptor_arena.size, "Descriptor Arena full, sucks to suck") 

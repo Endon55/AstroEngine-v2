@@ -478,6 +478,7 @@ game_manager_deinit :: proc(self: ^Game_Manager, engine: ^Engine) -> (ok:bool,) 
 GAME_INIT_FUNC :: #type proc(self: ^Scene, engine: ^Engine) ->(ok:bool)
 GAME_UPDATE_FUNC :: #type proc(self: ^Scene, engine: ^Engine, delta_time:f32,) ->(ok:bool)
 GAME_DRAW_FUNC :: #type proc(self: ^Scene, engine: ^Engine, cmd: vk.CommandBuffer) ->(ok:bool)
+GAME_RENDER_FUNC :: #type proc(self: ^Scene, engine: ^Engine, cmd: vk.CommandBuffer) ->(ok:bool)
 GAME_DRAW_UI_FUNC :: #type proc(self: ^Scene, engine: ^Engine,) ->(ok:bool)
 GAME_DEINIT_FUNC :: #type proc(self: ^Scene, engine: ^Engine,) ->(ok:bool)
 GAME_BUILD_PIPELINES_FUNC :: #type proc(self: ^Scene, engine: ^Engine,) ->(ok:bool)
@@ -498,6 +499,7 @@ GameAPI :: struct {
     init : GAME_INIT_FUNC,
     update : GAME_UPDATE_FUNC,
     draw: GAME_DRAW_FUNC,
+    render: GAME_RENDER_FUNC,
     draw_ui: GAME_DRAW_UI_FUNC,
     deinit: GAME_DEINIT_FUNC,
     build_pipelines: GAME_BUILD_PIPELINES_FUNC,
@@ -549,6 +551,22 @@ game_manager_game_draw :: proc(self: ^Game_Manager, scene: ^Scene, engine: ^Engi
     if !self.library.api.draw(scene, engine, cmd) {
         context.logger = engine.logger
         log.errorf("Game failed to draw properly")
+    }
+    context.allocator = engine.allocator
+    context.logger = engine.logger
+}
+
+// Called inside dynamic rendering, after the viewport and scissor are set.
+game_manager_game_render :: proc(self: ^Game_Manager, scene: ^Scene, engine: ^Engine, cmd: vk.CommandBuffer){
+    if self.library.api.render == nil {
+        return
+    }
+    context.allocator = self.game_allocator
+    context.logger = self.game_logger
+
+    if !self.library.api.render(scene, engine, cmd) {
+        context.logger = engine.logger
+        log.errorf("Game failed to render properly")
     }
     context.allocator = engine.allocator
     context.logger = engine.logger

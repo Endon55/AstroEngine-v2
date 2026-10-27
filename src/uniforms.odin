@@ -109,23 +109,30 @@ shader_pipeline_bind :: proc(self: ^Shader_Pipeline, cmd: vk.CommandBuffer, engi
 
 }
 
+
 shader_pipeline_destroy :: proc(self:^Shader_Pipeline,) {
 
     delete(self.resources)
 
     delete(self.binding_parameters.set_buffer_indices)
-    delete(self.set_arena_references)
+    delete(self.binding_parameters.set_buffer_frame_offsets)
     delete(self.binding_parameters.buffer_infos)
+    delete(self.set_arena_references)
 
+    // Set 0 is the shared texture heap layout, which the memory manager owns.
+    for &set_layout, i in self.pipeline_layout.set_layouts {
+        if i == 0 {
+            continue
+        }
+        delete(set_layout.binding_layouts)
+        vk.DestroyDescriptorSetLayout(self.vk_device, set_layout.vk_layout, nil)
+    }
+    delete(self.pipeline_layout.set_layouts)
 
     vk.DestroyPipeline(self.vk_device, self.pipeline, nil)
     vk.DestroyPipelineLayout(self.vk_device, self.pipeline_layout.vk_layout, nil)
 }
 
-Pipeline_Type :: enum {
-    GRAPHICS,
-    COMPUTE,
-}
 Graphics_Pipeline_Options :: struct {
     
     shader_stages:           [dynamic; MAX_SHADER_STAGES]vk.PipelineShaderStageCreateInfo,
@@ -143,75 +150,91 @@ Graphics_Pipeline_Options :: struct {
     allocator:               runtime.Allocator,
 
 }
-Shader_Pipeline_Builder :: struct {
+
+/*
+    State shared by both builders. Resource binding (uniforms, images, buffers) lives here and works on either builder
+    through subtype polymorphism, so the compute and graphics builders only add what is specific to them.
+    Builders are not copyable once graphics state is set, since some of that state points back into the builder.
+*/
+Pipeline_Builder_Base :: struct {
     vk_device: vk.Device,
-    shaders: Astro_Shaders,
-    type :Pipeline_Type,
     reflect_layout: Reflected_Shaders,
     shader_pipeline: Shader_Pipeline,
     memory_manager: ^Memory_Manager,
-    graphics: Graphics_Pipeline_Options,
     failed: bool,
 }
 
-shader_pipeline_builder_init :: proc(self: ^Shader_Pipeline_Builder, memory_manager:^Memory_Manager, device: vk.Device, type: Pipeline_Type) -> (ok:bool) {
+Compute_Pipeline_Builder :: struct {
+    using base: Pipeline_Builder_Base,
+    shaders: Compute_Shaders,
+}
+
+Graphics_Pipeline_Builder :: struct {
+    using base: Pipeline_Builder_Base,
+    shaders: Render_Shaders,
+    graphics: Graphics_Pipeline_Options,
+}
+
+@(private="file")
+pipeline_builder_base_init :: proc(self: ^Pipeline_Builder_Base, memory_manager: ^Memory_Manager, device: vk.Device) {
     self.vk_device = device
-    self.type = type
     self.memory_manager = memory_manager
     self.shader_pipeline.resources = make([dynamic]Shader_Resource)
+}
 
-
-    if type == .GRAPHICS {
-        self.graphics.input_assembly = {
-            sType = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        }
-
-        self.graphics.rasterizer = {
-            sType = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        }
-
-        self.graphics.multisampling = {
-            sType = .PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        }
-
-        self.graphics.depth_stencil = {
-            sType = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        }
-
-        self.graphics.tessellation_state = {
-            sType = .PIPELINE_TESSELLATION_STATE_CREATE_INFO,
-        }
-        self.graphics.render_info = {
-            sType = .PIPELINE_RENDERING_CREATE_INFO
-        }
-
-    }
-
+compute_pipeline_builder_init :: proc(self: ^Compute_Pipeline_Builder, memory_manager: ^Memory_Manager, device: vk.Device) -> (ok: bool) {
+    pipeline_builder_base_init(self, memory_manager, device)
     return true
 }
 
-shader_pipeline_builder_set_shaders :: proc(self: ^Shader_Pipeline_Builder, astro_shaders: Astro_Shaders, loc:=#caller_location){
+compute_pipeline_builder_set_shader :: proc(self: ^Compute_Pipeline_Builder, compute: Shader, loc := #caller_location) {
     ok: bool
-    self.shaders = astro_shaders
-    switch shaders in astro_shaders {
-    case Render_Shaders:
-        assert(self.type == .GRAPHICS, "Set Shader is of the wrong type")
-        
-        self.reflect_layout, ok = shaders_generate_raw_layout_render(self.vk_device, shaders) 
-    case Compute_Shaders:
-        assert(self.type == .COMPUTE, "Set shader is of the wrong type")
-        self.reflect_layout, ok = shaders_generate_raw_layout_compute(self.vk_device, shaders) 
-    }
-
+    self.shaders = {compute = compute}
+    self.reflect_layout, ok = shaders_generate_raw_layout_compute(self.vk_device, self.shaders)
     if !ok {
-        log.errorf("Could not generate the layout for Shaders, %v", loc)
+        log.errorf("Could not generate the layout for the Compute Shader, %v", loc)
         self.failed = true
     }
 }
+
+graphics_pipeline_builder_init :: proc(self: ^Graphics_Pipeline_Builder, memory_manager: ^Memory_Manager, device: vk.Device) -> (ok: bool) {
+    pipeline_builder_base_init(self, memory_manager, device)
+
+    self.graphics.input_assembly = {
+        sType = .PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+    }
+    self.graphics.rasterizer = {
+        sType = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+    }
+    self.graphics.multisampling = {
+        sType = .PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+    }
+    self.graphics.depth_stencil = {
+        sType = .PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+    }
+    self.graphics.tessellation_state = {
+        sType = .PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+    }
+    self.graphics.render_info = {
+        sType = .PIPELINE_RENDERING_CREATE_INFO,
+    }
+    return true
+}
+
+graphics_pipeline_builder_set_shaders :: proc(self: ^Graphics_Pipeline_Builder, shaders: Render_Shaders, loc := #caller_location) {
+    ok: bool
+    self.shaders = shaders
+    self.reflect_layout, ok = shaders_generate_raw_layout_render(self.vk_device, shaders)
+    if !ok {
+        log.errorf("Could not generate the layout for the Render Shaders, %v", loc)
+        self.failed = true
+    }
+}
+
 /*
     Uniforms are for relatively small amounts of data taht you want to change regularly.
 */
-shader_pipeline_builder_bind_uniform_ptr :: proc(self: ^Shader_Pipeline_Builder, data: ^^$T, set:u32, binding: u32) {
+pipeline_builder_bind_uniform_ptr :: proc(self: ^Pipeline_Builder_Base, data: ^^$T, set:u32, binding: u32) {
     uniform_binding: Uniform_Binding
     uniform_binding.set = set
     uniform_binding.binding = binding
@@ -225,7 +248,7 @@ shader_pipeline_builder_bind_uniform_ptr :: proc(self: ^Shader_Pipeline_Builder,
 /*
     Images are required to be it's own type of data.
 */
-shader_pipeline_builder_bind_image :: proc(self: ^Shader_Pipeline_Builder, texture_reference: Texture_Reference, set:u32, binding:u32) {
+pipeline_builder_bind_image :: proc(self: ^Pipeline_Builder_Base, texture_reference: Texture_Reference, set:u32, binding:u32) {
 
     texture_binding: Texture_Binding
 
@@ -236,7 +259,7 @@ shader_pipeline_builder_bind_image :: proc(self: ^Shader_Pipeline_Builder, textu
     append(&self.shader_pipeline.resources, texture_binding)
 }
 
-shader_pipeline_builder_bind_static_buffer :: proc(self: ^Shader_Pipeline_Builder, buffer: Allocated_Buffer, set: u32, binding: u32, loc:= #caller_location) {
+pipeline_builder_bind_static_buffer :: proc(self: ^Pipeline_Builder_Base, buffer: Allocated_Buffer, set: u32, binding: u32, loc:= #caller_location) {
     append(&self.shader_pipeline.resources, Buffer_Binding{
         set = set,
         binding = binding,
@@ -244,9 +267,10 @@ shader_pipeline_builder_bind_static_buffer :: proc(self: ^Shader_Pipeline_Builde
     })
 }
 /*
-    Must be a pointer to an array or a struct that doesn't contain pointers. The data will be uploaded AS-IS
+    Must be a pointer to an array or a struct that doesn't contain pointers. The data will be uploaded AS-IS.
+    The buffer is owned by the engine's deletion queue, it lives until the owning module (game) is torn down.
  */
-shader_pipeline_builder_bind_new_static_buffer :: proc(self: ^Shader_Pipeline_Builder, engine:^Engine, data:^$T, usage:vk.BufferUsageFlags = {.STORAGE_BUFFER}, set:u32, binding: u32,loc:= #caller_location) -> (buffer: Allocated_Buffer){
+pipeline_builder_bind_new_static_buffer :: proc(self: ^Pipeline_Builder_Base, engine:^Engine, data:^$T, usage:vk.BufferUsageFlags = {.STORAGE_BUFFER}, set:u32, binding: u32,loc:= #caller_location) -> (buffer: Allocated_Buffer){
     log.debugf("Binding new Static Buffer")
     ok: bool 
     buffer, ok = upload_data(engine, data, usage)
@@ -255,143 +279,63 @@ shader_pipeline_builder_bind_new_static_buffer :: proc(self: ^Shader_Pipeline_Bu
         log.errorf("Failed create new Static Buffer")
         return buffer
     } 
-    shader_pipeline_builder_bind_static_buffer(self, buffer, set, binding, loc)
+    deletion_queue_push(&engine.main_deletion_queue, buffer)
+    pipeline_builder_bind_static_buffer(self, buffer, set, binding, loc)
 
     return buffer 
 
 }
-shader_pipeline_builder_build :: proc(self: ^Shader_Pipeline_Builder, engine:^Engine) ->(shader_pipeline:Shader_Pipeline, ok:bool) {
-    if self.failed {
-        log.errorf("Shader Pipeline had an error before calling _build")
-        return shader_pipeline, false,
-    }
-    memory_manager: ^Memory_Manager = &engine.memory_manager
-    shader_pipeline = self.shader_pipeline
-    shader_pipeline.vk_device = self.vk_device
-    defer delete_reflected_shaders(&self.reflect_layout)
 
-    shader_pipeline.pipeline_layout = generate_vk_layout(self.vk_device, engine.memory_manager.universal_layout, &self.reflect_layout) or_return
-    defer if !ok {
-        vk.DestroyPipelineLayout(self.vk_device, shader_pipeline.pipeline_layout.vk_layout, nil)
-    }
+/*
+    Shared build steps
+*/
 
-    switch &shaders in self.shaders {
-    case Compute_Shaders:
-        module:= shader_get_module(self.vk_device, engine, &shaders.compute) or_return
-        pipeline_create_info := vk.ComputePipelineCreateInfo {
-            sType = .COMPUTE_PIPELINE_CREATE_INFO,
-            flags = {.DESCRIPTOR_BUFFER_EXT},
-            layout = shader_pipeline.pipeline_layout.vk_layout,
-            stage = pipeline_shader_stage_create_info({.COMPUTE}, module, "main"),
-        }
-        shader_pipeline.bind_point = .COMPUTE
-        vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &pipeline_create_info, nil, &shader_pipeline.pipeline), "Failed to create compute pipeline") or_return
-    
-    case Render_Shaders:
-        shader_pipeline.bind_point = .GRAPHICS
-        viewport_state := vk.PipelineViewportStateCreateInfo {
-            sType = .PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-            viewportCount = 1,
-            scissorCount = 1,
-        }
+// Generates the vulkan pipeline layout (and the per-set descriptor layouts) from reflection into `pipeline`.
+@(private="file")
+pipeline_create_layout :: proc(self: ^Pipeline_Builder_Base, engine: ^Engine, pipeline: ^Shader_Pipeline) -> (ok: bool) {
+    pipeline.vk_device = self.vk_device
+    pipeline.pipeline_layout = generate_vk_layout(self.vk_device, engine.memory_manager.universal_layout, &self.reflect_layout) or_return
+    return true
+}
 
-        color_blending := vk.PipelineColorBlendStateCreateInfo {
-            sType = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-            logicOpEnable = false,
-            logicOp = .COPY,
-            attachmentCount = 1,
-            pAttachments = &self.graphics.color_blend_attachment,
-        }
-
-        vertex_input_info := vk.PipelineVertexInputStateCreateInfo {
-            sType = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        }
-
-        dynamic_states := [?]vk.DynamicState{.VIEWPORT, .SCISSOR}
-        dynamic_info := vk.PipelineDynamicStateCreateInfo {
-            sType = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-            pDynamicStates = raw_data(dynamic_states[:]),
-            dynamicStateCount = u32(len(dynamic_states)),
-        }
-
-        module_infos := make([dynamic]vk.PipelineShaderStageCreateInfo) 
-
-        for stage in self.reflect_layout.stage_params {
-            module : vk.ShaderModule
-            #partial switch stage.stage {
-                 
-           case .VERTEX:
-            module, ok = shader_get_module(self.vk_device, engine, &shaders.vertex)
-           case .TESSELLATION_CONTROL:
-            module, ok = shader_get_module(self.vk_device, engine, &shaders.tessellation_control)
-           case .TESSELLATION_EVALUATION:
-            module, ok = shader_get_module(self.vk_device, engine, &shaders.tessellation_evaluation)
-           case .GEOMETRY:
-            module, ok = shader_get_module(self.vk_device, engine, &shaders.geometry)
-           case .FRAGMENT:
-            module, ok = shader_get_module(self.vk_device, engine, &shaders.fragment)
-            }
-
-            if !ok{
-                log.errorf("Failed to create shader module") 
-                return shader_pipeline, false
-            }
-
-            module_info := pipeline_shader_stage_create_info({stage.stage}, module, "main")
-            append(&module_infos, module_info)
-
-        }
-        flags := self.graphics.flags | {.DESCRIPTOR_BUFFER_EXT}
-        pipeline_create_info := vk.GraphicsPipelineCreateInfo {
-            sType               = .GRAPHICS_PIPELINE_CREATE_INFO,
-            // Connect the renderInfo to the pNext extension mechanism
-            pNext               = &self.graphics.render_info,
-            flags               = flags,
-            stageCount          = u32(len(module_infos)),
-            pStages             = raw_data(module_infos[:]),
-            pVertexInputState   = &vertex_input_info,
-            pInputAssemblyState = &self.graphics.input_assembly,
-            pTessellationState  = &self.graphics.tessellation_state,
-            pViewportState      = &viewport_state,
-            pRasterizationState = &self.graphics.rasterizer,
-            pMultisampleState   = &self.graphics.multisampling,
-            pDepthStencilState  = &self.graphics.depth_stencil,
-            pColorBlendState    = &color_blending,
-            pDynamicState       = &dynamic_info,
-            layout              = shader_pipeline.pipeline_layout.vk_layout,
-        }
-
-        vk_check(vk.CreateGraphicsPipelines(self.vk_device, 0, 1, &pipeline_create_info, nil, &shader_pipeline.pipeline), "Failed to create compute pipeline") or_return
-
-    }
-
-    sets:= shader_pipeline.pipeline_layout.sets
-    shader_pipeline.binding_parameters.set_buffer_indices = make([]u32, sets)
-    shader_pipeline.set_arena_references = make([]Arena_Reference, sets)
-    shader_pipeline.binding_parameters.set_buffer_frame_offsets = make([]vk.DeviceSize, sets)
-    shader_pipeline.binding_parameters.buffer_infos = make([]vk.DescriptorBufferBindingInfoEXT, 2)
-    shader_pipeline.binding_parameters.buffer_infos[0] = self.memory_manager.texture_heap.bind_info
-    shader_pipeline.binding_parameters.buffer_infos[1] = self.memory_manager.descriptor_arena.bind_info
+// Reserves descriptor memory for every set of the pipeline (set 0 is the shared texture heap).
+@(private="file")
+pipeline_alloc_set_memory :: proc(pipeline: ^Shader_Pipeline, memory_manager: ^Memory_Manager) {
+    sets := pipeline.pipeline_layout.sets
+    pipeline.binding_parameters.set_buffer_indices = make([]u32, sets)
+    pipeline.set_arena_references = make([]Arena_Reference, sets)
+    pipeline.binding_parameters.set_buffer_frame_offsets = make([]vk.DeviceSize, sets)
+    pipeline.binding_parameters.buffer_infos = make([]vk.DescriptorBufferBindingInfoEXT, 2)
+    pipeline.binding_parameters.buffer_infos[0] = memory_manager.texture_heap.bind_info
+    pipeline.binding_parameters.buffer_infos[1] = memory_manager.descriptor_arena.bind_info
 
     for i in 0..< sets {
         if i == 0 {
-            shader_pipeline.binding_parameters.set_buffer_indices[i] = 0
-            shader_pipeline.set_arena_references[0] = memory_manager.texture_heap.arena_reference
-            shader_pipeline.binding_parameters.set_buffer_frame_offsets[i] = 0
+            pipeline.binding_parameters.set_buffer_indices[i] = 0
+            pipeline.set_arena_references[0] = memory_manager.texture_heap.arena_reference
+            pipeline.binding_parameters.set_buffer_frame_offsets[i] = 0
         }
         else { 
-            shader_pipeline.binding_parameters.set_buffer_indices[i] = 1
-            shader_pipeline.set_arena_references[i] = memory_manager_register_descriptor(self.memory_manager, shader_pipeline.pipeline_layout.set_layouts[i].total_set_size, self.memory_manager.frames_buffered) 
+            pipeline.binding_parameters.set_buffer_indices[i] = 1
+            pipeline.set_arena_references[i] = memory_manager_register_descriptor(memory_manager, pipeline.pipeline_layout.set_layouts[i].total_set_size, memory_manager.frames_buffered) 
         }
     }
-    for resource in shader_pipeline.resources{
+}
+
+// Writes the descriptor of every resource into each frame's copy of its set.
+@(private="file")
+pipeline_write_resources :: proc(pipeline: ^Shader_Pipeline, engine: ^Engine) -> (ok: bool) {
+    memory_manager := &engine.memory_manager
+    sets := pipeline.pipeline_layout.sets
+    base_ptr := memory_manager.descriptor_arena.buffer.mapped_ptr
+
+    for resource in pipeline.resources {
         set, binding: u32
-        base_ptr := self.memory_manager.descriptor_arena.buffer.mapped_ptr
         get_info := vk.DescriptorGetInfoEXT{
             sType = .DESCRIPTOR_GET_INFO_EXT,
         }
         //Looping over each "frame" of the set buffer to fill with default data.
-        for i in 0..< self.memory_manager.frames_buffered {
+        for i in 0..< memory_manager.frames_buffered {
             ring_frame_offset: vk.DeviceSize = vk.DeviceSize(i) * memory_manager.uniform.frame_buffer_size
             data: rawptr
             switch res in resource{
@@ -414,15 +358,15 @@ shader_pipeline_builder_build :: proc(self: ^Shader_Pipeline_Builder, engine:^En
                 set, binding = res.set, res.binding
                 data = &vk.DescriptorAddressInfoEXT {
                     sType = .DESCRIPTOR_ADDRESS_INFO_EXT,
-                    address = engine.memory_manager.uniform.ring_buffer.device_address + vk.DeviceAddress(ring_frame_offset + res.mem_reference.gpu_offset),
+                    address = memory_manager.uniform.ring_buffer.device_address + vk.DeviceAddress(ring_frame_offset + res.mem_reference.gpu_offset),
                     range = res.mem_reference.size,
                 }
             }
-            if set == 0 || set >= sets || int(binding) >= len(shader_pipeline.pipeline_layout.set_layouts[set].binding_layouts) {
+            if set == 0 || set >= sets || int(binding) >= len(pipeline.pipeline_layout.set_layouts[set].binding_layouts) {
                 log.errorf("Resource bound to set %v binding %v, which isn't a bindable slot in this pipeline (set 0 is the shared texture heap)", set, binding)
-                return shader_pipeline, false
+                return false
             }
-            get_info.type = shader_pipeline.pipeline_layout.set_layouts[set].binding_layouts[binding].type 
+            get_info.type = pipeline.pipeline_layout.set_layouts[set].binding_layouts[binding].type 
             switch get_info.type {
             case .COMBINED_IMAGE_SAMPLER:
                 get_info.data.pCombinedImageSampler = cast(^vk.DescriptorImageInfo)data
@@ -447,39 +391,165 @@ shader_pipeline_builder_build :: proc(self: ^Shader_Pipeline_Builder, engine:^En
                 get_info.data.pStorageTexelBuffer = cast(^vk.DescriptorAddressInfoEXT)data
             case .SAMPLER, .ACCELERATION_STRUCTURE_NV, .ACCELERATION_STRUCTURE_KHR, .SAMPLE_WEIGHT_IMAGE_QCOM, .BLOCK_MATCH_IMAGE_QCOM, .TENSOR_ARM, .MUTABLE_EXT, .PARTITIONED_ACCELERATION_STRUCTURE_NV:
                 log.errorf("I Don't support these descriptor types, they are an offront to God and I denounce them unequivically: %v", get_info.type)
-                return shader_pipeline, false
+                return false
             }
-            offset := get_descriptor_offset(&shader_pipeline.set_arena_references[set], vk.DeviceSize(i))
+            offset := get_descriptor_offset(&pipeline.set_arena_references[set], i)
             dst := ptr_offset(base_ptr,
-                offset + shader_pipeline.pipeline_layout.set_layouts[set].binding_layouts[binding].offset)
+                offset + pipeline.pipeline_layout.set_layouts[set].binding_layouts[binding].offset)
 
-            vk.GetDescriptorEXT(self.vk_device, &get_info, int(get_descriptor_size(self.memory_manager, get_info.type)) , dst)
+            vk.GetDescriptorEXT(pipeline.vk_device, &get_info, int(get_descriptor_size(memory_manager, get_info.type)) , dst)
         }
     }
+    return true
+}
 
-    deletion_queue_push(&engine.main_deletion_queue, shader_pipeline)
-    return shader_pipeline, true
+// Allocates descriptor memory, writes the bound resources, and hands the pipeline to the engine for cleanup.
+@(private="file")
+pipeline_finalize :: proc(self: ^Pipeline_Builder_Base, engine: ^Engine, pipeline: ^Shader_Pipeline) -> (ok: bool) {
+    pipeline_alloc_set_memory(pipeline, self.memory_manager)
+    pipeline_write_resources(pipeline, engine) or_return
+    deletion_queue_push(&engine.main_deletion_queue, pipeline^)
+    return true
+}
+
+compute_pipeline_builder_build :: proc(self: ^Compute_Pipeline_Builder, engine: ^Engine) -> (pipeline: Shader_Pipeline, ok: bool) {
+    defer delete_reflected_shaders(&self.reflect_layout)
+    if self.failed {
+        log.errorf("Compute Pipeline had an error before calling _build")
+        delete(self.shader_pipeline.resources)
+        return pipeline, false
+    }
+    pipeline = self.shader_pipeline
+    defer if !ok {
+        shader_pipeline_destroy(&pipeline)
+    }
+
+    pipeline_create_layout(self, engine, &pipeline) or_return
+
+    module := shader_get_module(self.vk_device, engine, &self.shaders.compute) or_return
+    pipeline_create_info := vk.ComputePipelineCreateInfo {
+        sType = .COMPUTE_PIPELINE_CREATE_INFO,
+        flags = {.DESCRIPTOR_BUFFER_EXT},
+        layout = pipeline.pipeline_layout.vk_layout,
+        stage = pipeline_shader_stage_create_info({.COMPUTE}, module, "main"),
+    }
+    pipeline.bind_point = .COMPUTE
+    vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &pipeline_create_info, nil, &pipeline.pipeline), "Failed to create compute pipeline") or_return
+
+    pipeline_finalize(self, engine, &pipeline) or_return
+    return pipeline, true
+}
+
+graphics_pipeline_builder_build :: proc(self: ^Graphics_Pipeline_Builder, engine: ^Engine) -> (pipeline: Shader_Pipeline, ok: bool) {
+    defer delete_reflected_shaders(&self.reflect_layout)
+    if self.failed {
+        log.errorf("Graphics Pipeline had an error before calling _build")
+        delete(self.shader_pipeline.resources)
+        return pipeline, false
+    }
+    pipeline = self.shader_pipeline
+    defer if !ok {
+        shader_pipeline_destroy(&pipeline)
+    }
+
+    pipeline_create_layout(self, engine, &pipeline) or_return
+    pipeline.bind_point = .GRAPHICS
+
+    viewport_state := vk.PipelineViewportStateCreateInfo {
+        sType = .PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        viewportCount = 1,
+        scissorCount = 1,
+    }
+
+    color_blending := vk.PipelineColorBlendStateCreateInfo {
+        sType = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        logicOpEnable = false,
+        logicOp = .COPY,
+        attachmentCount = 1,
+        pAttachments = &self.graphics.color_blend_attachment,
+    }
+
+    vertex_input_info := vk.PipelineVertexInputStateCreateInfo {
+        sType = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+    }
+
+    dynamic_states := [?]vk.DynamicState{.VIEWPORT, .SCISSOR}
+    dynamic_info := vk.PipelineDynamicStateCreateInfo {
+        sType = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        pDynamicStates = raw_data(dynamic_states[:]),
+        dynamicStateCount = u32(len(dynamic_states)),
+    }
+
+    module_infos := make([dynamic]vk.PipelineShaderStageCreateInfo) 
+    defer delete(module_infos)
+
+    for stage in self.reflect_layout.stage_params {
+        module : vk.ShaderModule
+        #partial switch stage.stage {
+        case .VERTEX:
+            module, ok = shader_get_module(self.vk_device, engine, &self.shaders.vertex)
+        case .TESSELLATION_CONTROL:
+            module, ok = shader_get_module(self.vk_device, engine, &self.shaders.tessellation_control)
+        case .TESSELLATION_EVALUATION:
+            module, ok = shader_get_module(self.vk_device, engine, &self.shaders.tessellation_evaluation)
+        case .GEOMETRY:
+            module, ok = shader_get_module(self.vk_device, engine, &self.shaders.geometry)
+        case .FRAGMENT:
+            module, ok = shader_get_module(self.vk_device, engine, &self.shaders.fragment)
+        }
+
+        if !ok{
+            log.errorf("Failed to create shader module") 
+            return pipeline, false
+        }
+
+        append(&module_infos, pipeline_shader_stage_create_info({stage.stage}, module, "main"))
+    }
+    flags := self.graphics.flags | {.DESCRIPTOR_BUFFER_EXT}
+    pipeline_create_info := vk.GraphicsPipelineCreateInfo {
+        sType               = .GRAPHICS_PIPELINE_CREATE_INFO,
+        // Connect the renderInfo to the pNext extension mechanism
+        pNext               = &self.graphics.render_info,
+        flags               = flags,
+        stageCount          = u32(len(module_infos)),
+        pStages             = raw_data(module_infos[:]),
+        pVertexInputState   = &vertex_input_info,
+        pInputAssemblyState = &self.graphics.input_assembly,
+        pTessellationState  = &self.graphics.tessellation_state,
+        pViewportState      = &viewport_state,
+        pRasterizationState = &self.graphics.rasterizer,
+        pMultisampleState   = &self.graphics.multisampling,
+        pDepthStencilState  = &self.graphics.depth_stencil,
+        pColorBlendState    = &color_blending,
+        pDynamicState       = &dynamic_info,
+        layout              = pipeline.pipeline_layout.vk_layout,
+    }
+
+    vk_check(vk.CreateGraphicsPipelines(self.vk_device, 0, 1, &pipeline_create_info, nil, &pipeline.pipeline), "Failed to create graphics pipeline") or_return
+
+    pipeline_finalize(self, engine, &pipeline) or_return
+    return pipeline, true
 }
 
 // Graphics Options
-shader_pipeline_builder_set_input_topology :: proc(self: ^Shader_Pipeline_Builder, topology: vk.PrimitiveTopology, primitive_restart_enable: bool = false,) {
+graphics_pipeline_builder_set_input_topology :: proc(self: ^Graphics_Pipeline_Builder, topology: vk.PrimitiveTopology, primitive_restart_enable: bool = false,) {
 
     self.graphics.input_assembly.topology = topology
     self.graphics.input_assembly.primitiveRestartEnable = b32(primitive_restart_enable)
 
 }
 
-shader_pipeline_builder_set_polygon_mode :: proc(self: ^Shader_Pipeline_Builder, polygon_mode: vk.PolygonMode, line_width: f32 = 1.0,) {
+graphics_pipeline_builder_set_polygon_mode :: proc(self: ^Graphics_Pipeline_Builder, polygon_mode: vk.PolygonMode, line_width: f32 = 1.0,) {
     self.graphics.rasterizer.polygonMode = polygon_mode
     self.graphics.rasterizer.lineWidth = line_width
 }
 
-shader_pipeline_builder_set_cull_mode :: proc(self: ^Shader_Pipeline_Builder, cull_mode: vk.CullModeFlags, front_face: vk.FrontFace,) {
+graphics_pipeline_builder_set_cull_mode :: proc(self: ^Graphics_Pipeline_Builder, cull_mode: vk.CullModeFlags, front_face: vk.FrontFace,) {
     self.graphics.rasterizer.cullMode = cull_mode
     self.graphics.rasterizer.frontFace = front_face
 }
 
-shader_pipeline_builder_set_multisampling :: proc(self: ^Shader_Pipeline_Builder, rasterization_samples: vk.SampleCountFlags, min_sample_shading: f32 = 1.0, sample_mask: ^vk.SampleMask = nil, alpha_to_coverage_enable: bool = false, alpha_to_one_enable: bool = false,) {
+graphics_pipeline_builder_set_multisampling :: proc(self: ^Graphics_Pipeline_Builder, rasterization_samples: vk.SampleCountFlags, min_sample_shading: f32 = 1.0, sample_mask: ^vk.SampleMask = nil, alpha_to_coverage_enable: bool = false, alpha_to_one_enable: bool = false,) {
     self.graphics.multisampling.rasterizationSamples = rasterization_samples
     self.graphics.multisampling.sampleShadingEnable = min_sample_shading < 1.0
     self.graphics.multisampling.minSampleShading = min_sample_shading
@@ -488,12 +558,12 @@ shader_pipeline_builder_set_multisampling :: proc(self: ^Shader_Pipeline_Builder
     self.graphics.multisampling.alphaToOneEnable = b32(alpha_to_one_enable)
 }
 
-shader_pipeline_builder_set_multisampling_none :: proc(self: ^Shader_Pipeline_Builder) {
-    shader_pipeline_builder_set_multisampling(self, {._1})
+graphics_pipeline_builder_set_multisampling_none :: proc(self: ^Graphics_Pipeline_Builder) {
+    graphics_pipeline_builder_set_multisampling(self, {._1})
 }
 
-shader_pipeline_builder_set_blend_state :: proc(
-    self: ^Shader_Pipeline_Builder,
+graphics_pipeline_builder_set_blend_state :: proc(
+    self: ^Graphics_Pipeline_Builder,
     blend_enable: bool,
     src_color_blend: vk.BlendFactor,
     dst_color_blend: vk.BlendFactor,
@@ -515,7 +585,7 @@ shader_pipeline_builder_set_blend_state :: proc(
     }
 }
 
-shader_pipeline_builder_enable_blending_additive :: proc(self: ^Shader_Pipeline_Builder) {
+graphics_pipeline_builder_enable_blending_additive :: proc(self: ^Graphics_Pipeline_Builder) {
     self.graphics.color_blend_attachment.colorWriteMask = {.R,.G,.B,.A}
     self.graphics.color_blend_attachment.blendEnable = true
     self.graphics.color_blend_attachment.srcColorBlendFactor = .SRC_ALPHA
@@ -526,7 +596,7 @@ shader_pipeline_builder_enable_blending_additive :: proc(self: ^Shader_Pipeline_
     self.graphics.color_blend_attachment.alphaBlendOp = .ADD
 }
 
-shader_pipeline_builder_enable_blending_alphablend :: proc(self: ^Shader_Pipeline_Builder) {
+graphics_pipeline_builder_enable_blending_alphablend :: proc(self: ^Graphics_Pipeline_Builder) {
     self.graphics.color_blend_attachment.colorWriteMask = {.R,.G,.B,.A}
     self.graphics.color_blend_attachment.blendEnable = true
     self.graphics.color_blend_attachment.srcColorBlendFactor = .SRC_ALPHA
@@ -537,22 +607,22 @@ shader_pipeline_builder_enable_blending_alphablend :: proc(self: ^Shader_Pipelin
     self.graphics.color_blend_attachment.alphaBlendOp = .ADD
 }
 
-shader_pipeline_builder_disable_blending :: proc(self: ^Shader_Pipeline_Builder) {
+graphics_pipeline_builder_disable_blending :: proc(self: ^Graphics_Pipeline_Builder) {
     self.graphics.color_blend_attachment.colorWriteMask = {.R, .G, .B, .A}
     self.graphics.color_blend_attachment.blendEnable = false
 }
 
-shader_pipeline_builder_set_color_attachment_format :: proc(self: ^Shader_Pipeline_Builder, format: vk.Format,) {
+graphics_pipeline_builder_set_color_attachment_format :: proc(self: ^Graphics_Pipeline_Builder, format: vk.Format,) {
     self.graphics.color_attachment_format = format
     self.graphics.render_info.colorAttachmentCount = 1
     self.graphics.render_info.pColorAttachmentFormats = &self.graphics.color_attachment_format
 }
 
-shader_pipeline_builder_set_depth_attachment_format :: proc(self: ^Shader_Pipeline_Builder, format: vk.Format,) {
+graphics_pipeline_builder_set_depth_attachment_format :: proc(self: ^Graphics_Pipeline_Builder, format: vk.Format,) {
     self.graphics.render_info.depthAttachmentFormat = format
 }
 
-shader_pipeline_builder_enable_depth_test :: proc(self:^Shader_Pipeline_Builder, depth_write_enable: bool, op: vk.CompareOp) {
+graphics_pipeline_builder_enable_depth_test :: proc(self:^Graphics_Pipeline_Builder, depth_write_enable: bool, op: vk.CompareOp) {
     self.graphics.depth_stencil.depthTestEnable = true
     self.graphics.depth_stencil.depthWriteEnable = b32(depth_write_enable)
     self.graphics.depth_stencil.depthCompareOp = op
@@ -564,7 +634,7 @@ shader_pipeline_builder_enable_depth_test :: proc(self:^Shader_Pipeline_Builder,
     self.graphics.depth_stencil.maxDepthBounds = 1.0
 }
 
-shader_pipeline_builder_disable_depth_test :: proc(self: ^Shader_Pipeline_Builder) {
+graphics_pipeline_builder_disable_depth_test :: proc(self: ^Graphics_Pipeline_Builder) {
     self.graphics.depth_stencil.depthTestEnable = false
     self.graphics.depth_stencil.depthWriteEnable = false
     self.graphics.depth_stencil.depthCompareOp = .NEVER
