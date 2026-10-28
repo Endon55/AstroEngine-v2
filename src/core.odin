@@ -14,8 +14,16 @@ Allocated_Buffer :: struct {
     info: vma.AllocationInfo,
     allocation: vma.Allocation,
     allocator: vma.Allocator, 
-    device_address: vk.DeviceAddress,
-    mapped_ptr: rawptr,
+    gpu_address: vk.DeviceAddress,
+    cpu_write_ptr: rawptr,
+}
+
+Allocated_Buffer_View :: struct {
+    parent_buffer: ^Allocated_Buffer,
+
+    size: vk.DeviceSize,
+    gpu_address: vk.DeviceAddress,
+    cpu_write_ptr: rawptr,
 }
 
 Vertex :: struct {
@@ -44,7 +52,7 @@ upload_data :: proc {
 
 upload_data_buffer ::proc(buffer: Allocated_Buffer, data:rawptr, size: int) {
 
-    intr.mem_copy(buffer.mapped_ptr, data, size)
+    intr.mem_copy(buffer.cpu_write_ptr, data, size)
 }
 
 upload_data_raw :: proc(engine:^Engine, data:^$T, usage:vk.BufferUsageFlags = {.STORAGE_BUFFER},loc:= #caller_location) -> (buffer: Allocated_Buffer, ok: bool,) {
@@ -71,7 +79,7 @@ upload_data_raw :: proc(engine:^Engine, data:^$T, usage:vk.BufferUsageFlags = {.
     if !ok{
         return buffer, false
     }
-    if buffer.mapped_ptr == nil {
+    if buffer.cpu_write_ptr == nil {
         log.errorf("Buffer for upload_data isn't host mapped")
         return buffer, false
     }
@@ -162,7 +170,10 @@ upload_mesh :: proc(self: ^Engine, indices: []u32, vertices: []Vertex,) -> (
          runtime.debug_trap()
          return false
 }
- 
+create_buffer_view :: proc(self:^ Engine, buffer: ^Allocated_Buffer, offset: vk.DeviceSize, size: vk.DeviceSize) -> (view: Allocated_Buffer_View) {
+    
+    return view
+}
 create_buffer :: proc(self: ^Engine, alloc_size: vk.DeviceSize, usage: vk.BufferUsageFlags, memory_usage: vma.MemoryUsage,loc := #caller_location) -> (new_buffer: Allocated_Buffer, ok: bool,) {
     usage_flags := usage + {.SHADER_DEVICE_ADDRESS}
     buffer_info := vk.BufferCreateInfo {
@@ -179,13 +190,13 @@ create_buffer :: proc(self: ^Engine, alloc_size: vk.DeviceSize, usage: vk.Buffer
 
     vk_check(vma.CreateBuffer(self.vma_allocator, buffer_info, vma_alloc_info, &new_buffer.buffer, &new_buffer.allocation, &new_buffer.info),"Failed to create vulkan GPU buffer", loc) or_return
     new_buffer.size = alloc_size
-    new_buffer.mapped_ptr = new_buffer.info.pMappedData
+    new_buffer.cpu_write_ptr = new_buffer.info.pMappedData
 
     address_info := vk.BufferDeviceAddressInfo {
         sType = .BUFFER_DEVICE_ADDRESS_INFO,
         buffer = new_buffer.buffer,
     }
-    new_buffer.device_address = vk.GetBufferDeviceAddress(self.vk_device, &address_info)
+    new_buffer.gpu_address = vk.GetBufferDeviceAddress(self.vk_device, &address_info)
     return new_buffer, true
 }
 

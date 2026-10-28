@@ -14,6 +14,7 @@ Raw_Memory :: struct {
     ptr:rawptr,
     size: u32,
 }
+
 Resource_Proc :: #type proc();
 
 Resource :: union {
@@ -43,6 +44,9 @@ Resource :: union {
     Allocated_Image,
     Allocated_Buffer,
     Shader_Pipeline,
+    Engine_Samplers,
+
+    ^Heap,
 
     Metallic_Roughness,
     Material_Shader,
@@ -136,9 +140,11 @@ delete_resource ::proc(device:vk.Device, resource:^Resource_Loc) {
         free(res.ptr, res.allocator)
     case Shader_Pipeline:
         shader_pipeline_destroy(&res)
-
+    case Engine_Samplers:
+        samplers_deinit(&res)
+    case ^Heap:
+        delete(res.freed_indexes)
     }
-
 
 
 }

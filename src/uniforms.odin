@@ -292,42 +292,43 @@ pipeline_builder_bind_new_static_buffer :: proc(self: ^Pipeline_Builder_Base, en
 
 // Generates the vulkan pipeline layout (and the per-set descriptor layouts) from reflection into `pipeline`.
 @(private="file")
-pipeline_create_layout :: proc(self: ^Pipeline_Builder_Base, engine: ^Engine, pipeline: ^Shader_Pipeline) -> (ok: bool) {
+pipeline_create_layout :: proc(self: ^Pipeline_Builder_Base, pipeline: ^Shader_Pipeline) -> (ok: bool) {
     pipeline.vk_device = self.vk_device
-    pipeline.pipeline_layout = generate_vk_layout(self.vk_device, engine.memory_manager.universal_layout, &self.reflect_layout) or_return
+    pipeline.pipeline_layout = generate_vk_layout(self.vk_device, GLOBALS.memory_manager.universal_heap.set_layout^, &self.reflect_layout) or_return
     return true
 }
 
 // Reserves descriptor memory for every set of the pipeline (set 0 is the shared texture heap).
 @(private="file")
-pipeline_alloc_set_memory :: proc(pipeline: ^Shader_Pipeline, memory_manager: ^Memory_Manager) {
+pipeline_alloc_set_memory :: proc(pipeline: ^Shader_Pipeline,) {
+    memory_manager:= GLOBALS.memory_manager
     sets := pipeline.pipeline_layout.sets
     pipeline.binding_parameters.set_buffer_indices = make([]u32, sets)
     pipeline.set_arena_references = make([]Arena_Reference, sets)
     pipeline.binding_parameters.set_buffer_frame_offsets = make([]vk.DeviceSize, sets)
     pipeline.binding_parameters.buffer_infos = make([]vk.DescriptorBufferBindingInfoEXT, 2)
-    pipeline.binding_parameters.buffer_infos[0] = memory_manager.texture_heap.bind_info
+    pipeline.binding_parameters.buffer_infos[0] = memory_manager.universal_heap.bind_info
     pipeline.binding_parameters.buffer_infos[1] = memory_manager.descriptor_arena.bind_info
 
     for i in 0..< sets {
         if i == 0 {
             pipeline.binding_parameters.set_buffer_indices[i] = 0
-            pipeline.set_arena_references[0] = memory_manager.texture_heap.arena_reference
+            pipeline.set_arena_references[0] = {}
             pipeline.binding_parameters.set_buffer_frame_offsets[i] = 0
         }
         else { 
             pipeline.binding_parameters.set_buffer_indices[i] = 1
-            pipeline.set_arena_references[i] = memory_manager_register_descriptor(memory_manager, pipeline.pipeline_layout.set_layouts[i].total_set_size, memory_manager.frames_buffered) 
+            pipeline.set_arena_references[i] = memory_manager_register_descriptor(pipeline.pipeline_layout.set_layouts[i].total_set_size, memory_manager.frames_buffered) 
         }
     }
 }
 
 // Writes the descriptor of every resource into each frame's copy of its set.
 @(private="file")
-pipeline_write_resources :: proc(pipeline: ^Shader_Pipeline, engine: ^Engine) -> (ok: bool) {
-    memory_manager := &engine.memory_manager
+pipeline_write_resources :: proc(pipeline: ^Shader_Pipeline) -> (ok: bool) {
+    memory_manager := GLOBALS.memory_manager
     sets := pipeline.pipeline_layout.sets
-    base_ptr := memory_manager.descriptor_arena.buffer.mapped_ptr
+    base_ptr := memory_manager.descriptor_arena.buffer.cpu_write_ptr
 
     for resource in pipeline.resources {
         set, binding: u32
@@ -350,7 +351,7 @@ pipeline_write_resources :: proc(pipeline: ^Shader_Pipeline, engine: ^Engine) ->
                 set, binding = res.set, res.binding
                 data = &vk.DescriptorAddressInfoEXT {
                     sType = .DESCRIPTOR_ADDRESS_INFO_EXT,
-                    address = res.reference.device_address,
+                    address = res.reference.gpu_address,
                     range = res.reference.size,
                 }
 
@@ -358,7 +359,7 @@ pipeline_write_resources :: proc(pipeline: ^Shader_Pipeline, engine: ^Engine) ->
                 set, binding = res.set, res.binding
                 data = &vk.DescriptorAddressInfoEXT {
                     sType = .DESCRIPTOR_ADDRESS_INFO_EXT,
-                    address = memory_manager.uniform.ring_buffer.device_address + vk.DeviceAddress(ring_frame_offset + res.mem_reference.gpu_offset),
+                    address = memory_manager.uniform.ring_buffer.gpu_address+ vk.DeviceAddress(ring_frame_offset + res.mem_reference.gpu_offset),
                     range = res.mem_reference.size,
                 }
             }
@@ -397,7 +398,7 @@ pipeline_write_resources :: proc(pipeline: ^Shader_Pipeline, engine: ^Engine) ->
             dst := ptr_offset(base_ptr,
                 offset + pipeline.pipeline_layout.set_layouts[set].binding_layouts[binding].offset)
 
-            vk.GetDescriptorEXT(pipeline.vk_device, &get_info, int(get_descriptor_size(memory_manager, get_info.type)) , dst)
+            vk.GetDescriptorEXT(pipeline.vk_device, &get_info, int(get_descriptor_size(get_info.type)) , dst)
         }
     }
     return true
@@ -406,8 +407,8 @@ pipeline_write_resources :: proc(pipeline: ^Shader_Pipeline, engine: ^Engine) ->
 // Allocates descriptor memory, writes the bound resources, and hands the pipeline to the engine for cleanup.
 @(private="file")
 pipeline_finalize :: proc(self: ^Pipeline_Builder_Base, engine: ^Engine, pipeline: ^Shader_Pipeline) -> (ok: bool) {
-    pipeline_alloc_set_memory(pipeline, self.memory_manager)
-    pipeline_write_resources(pipeline, engine) or_return
+    pipeline_alloc_set_memory(pipeline)
+    pipeline_write_resources(pipeline) or_return
     deletion_queue_push(&engine.main_deletion_queue, pipeline^)
     return true
 }
@@ -424,7 +425,7 @@ compute_pipeline_builder_build :: proc(self: ^Compute_Pipeline_Builder, engine: 
         shader_pipeline_destroy(&pipeline)
     }
 
-    pipeline_create_layout(self, engine, &pipeline) or_return
+    pipeline_create_layout(self, &pipeline) or_return
 
     module := shader_get_module(self.vk_device, engine, &self.shaders.compute) or_return
     pipeline_create_info := vk.ComputePipelineCreateInfo {
@@ -452,7 +453,7 @@ graphics_pipeline_builder_build :: proc(self: ^Graphics_Pipeline_Builder, engine
         shader_pipeline_destroy(&pipeline)
     }
 
-    pipeline_create_layout(self, engine, &pipeline) or_return
+    pipeline_create_layout(self, &pipeline) or_return
     pipeline.bind_point = .GRAPHICS
 
     viewport_state := vk.PipelineViewportStateCreateInfo {
@@ -473,7 +474,7 @@ graphics_pipeline_builder_build :: proc(self: ^Graphics_Pipeline_Builder, engine
         sType = .PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
     }
 
-    dynamic_states := [?]vk.DynamicState{.VIEWPORT, .SCISSOR}
+    dynamic_states := [?]vk.DynamicState{.VIEWPORT, .SCISSOR, .POLYGON_MODE_EXT}
     dynamic_info := vk.PipelineDynamicStateCreateInfo {
         sType = .PIPELINE_DYNAMIC_STATE_CREATE_INFO,
         pDynamicStates = raw_data(dynamic_states[:]),

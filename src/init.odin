@@ -3,6 +3,7 @@ package astro
 import "core:log"
 import "base:runtime"
 import "core:mem"
+import "core:fmt"
 
 import "vendor:glfw"
 import vk "vendor:vulkan"
@@ -11,20 +12,26 @@ import im_glfw "libs:imgui/backends/glfw"
 import im_vk "libs:imgui/backends/vulkan"
 
 
-import "libs:vkb"
 import vma "libs:vma"
 
 
-engine_start :: proc() ->(ok:bool){
+engine_start :: proc() ->(ok:bool) {
+
     assert(DATA_FRAMES_BUFFERED > SWAPCHAIN_FRAMES_BUFFERED, "SWAPCHAIN and DATA frame count are incompatible")
+
+    GLOBALS = new(Engine_Globals)
+    defer {
+        free(GLOBALS)
+        fmt.println("Globals Freed")
+    }
+    GLOBALS.DEFAULT_ALLOCATOR = context.allocator
+
     when ODIN_DEBUG {
         context.logger = log.create_console_logger(opt = {.Level, .Terminal_Color}, ident = "ENGINE")
         defer log.destroy_console_logger(context.logger)
-        DEFAULT_ALLOCATOR = context.allocator
         track: mem.Tracking_Allocator
         mem.tracking_allocator_init(&track, context.allocator)
         context.allocator = mem.tracking_allocator(&track)
-        ENGINE_ALLOCATOR = context.allocator
         defer {
             if len(track.allocation_map) > 0 {
                 log.errorf("=== %v allocations not freed ===", len(track.allocation_map))
@@ -40,12 +47,12 @@ engine_start :: proc() ->(ok:bool){
             }
             mem.tracking_allocator_destroy(&track)
         }
-
     }
 
     engine := new(Engine)
     engine.logger = context.logger
     engine.allocator = context.allocator
+    GLOBALS.ENGINE_ALLOCATOR = context.allocator
     ensure(engine != nil, "Failed to allocate 'Engine' object")
     defer free(engine)
 
@@ -59,6 +66,7 @@ engine_start :: proc() ->(ok:bool){
 
 @(require_results)
 engine_init :: proc(self: ^Engine) -> (ok: bool) {
+
     ensure(self != nil, "Invalid 'Engine' object")
     g_logger = context.logger
 
@@ -73,33 +81,44 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
     defer if !ok {
         destroy_window(self.window)
     }
-    
+
+
     glfw.SetWindowUserPointer(self.window, self)
 
     glfw.SetFramebufferSizeCallback(self.window, callback_framebuffer_size)
     glfw.SetWindowIconifyCallback(self.window, callback_window_minimize)
 
 
+    GLOBALS.window_extent = &self.window_extent
+    GLOBALS.window = self.window 
 
 
     log.debugf("Initializing Vulkan")
     engine_init_vulkan(self) or_return
+    GLOBALS.main_deletion_queue = &self.main_deletion_queue
+    GLOBALS.vk_context = &self.vk_context
+    GLOBALS.vk_device = self.vk_device
+    GLOBALS.vk_instance = self.vk_instance
+    GLOBALS.vk_surface = self.vk_surface
+    GLOBALS.vk_physical_device = self.vk_physical_device
+    GLOBALS.vk_proc_address = rawptr(vk.GetInstanceProcAddr)
 
     log.debugf("Initializing Memory Manager")
+    samplers_init(&self.samplers)
     memory_manager_init(&self.memory_manager, self) or_return
     self.vma_allocator = self.memory_manager.vma_allocator
-
     log.debugf("Initializing Swapchain")
     engine_init_swapchain(self) or_return
     log.debugf("Initializing Engine Commands")
     engine_init_commands(self) or_return
     log.debugf("Initializing Sync Structures")
     engine_init_sync_structures(self) or_return
+
     log.debugf("Initializing Shader Manager")
     shader_manager_init(&self.shader_manager) or_return
+
     log.debugf("Initializing Game Manager")
     game_manager_init(&self.game_manager, self, "", context.allocator) or_return
-
 
     log.debugf("Initializing Descriptors")
     engine_init_descriptors(self) or_return
@@ -107,20 +126,29 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
     engine_init_pipelines(self) or_return
     log.debugf("Initializing ImGui")
     engine_init_imgui(self) or_return
-    game_manager_game_reload(&self.game_manager, &self.scene, self)
+
+
+    im.GetAllocatorFunctions(&GLOBALS.imgui_alloc_func, &GLOBALS.imgui_free_func, &GLOBALS.imgui_user_data)
+    GLOBALS.imgui_context   = im.GetCurrentContext()
+
     log.debugf("Initializing Input")
     input_init(&self.input, self.window)
     log.debugf("Initializing Scene")
     engine_init_default_data(self) or_return
     self.is_initialized = true
 
+
+    GLOBALS.main_deletion_queue = &self.main_deletion_queue
+    GLOBALS.input = &self.input
+    GLOBALS.memory_manager = &self.memory_manager
+    GLOBALS.shader_manager = &self.shader_manager
+
+    GLOBALS.scene = &self.scene
+
     log.debugf("Starting Game")
-    game_manager_game_init(&self.game_manager, &self.scene, self)
     shader_manager_start_hot_reload(&self.shader_manager) or_return
 
     return true
-
-
 }
 
 engine_resize_swapchain :: proc(self: ^Engine) -> (ok: bool) {
@@ -146,6 +174,9 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
             descriptorBuffer = true,
             descriptorBufferPushDescriptors = true,
         },
+        device_features = {
+            fillModeNonSolid = true,
+        },
         device_features_11 = {
             sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
             shaderDrawParameters = true,
@@ -161,6 +192,10 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
             dynamicRendering = true,
             synchronization2 = true,
         },
+        device_features_dynamic_state_3 = {
+            sType = .PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT,
+            extendedDynamicState3PolygonMode = true,
+        }
     }
     features.device_extensions = make([dynamic]cstring, context.allocator)
     append(&features.device_extensions,
@@ -168,6 +203,7 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
         vk.KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
         vk.EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME,
         vk.EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
+        vk.EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME,
         )
     log.debugf("---Creating Instance")
     create_vk_instance(&self.vk_context, features, self) or_return
@@ -188,7 +224,6 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
     
     log.debugf("Setting up deletion queue and allocators")
     deletion_queue_init(&self.main_deletion_queue, self.vk_device)
-
 
     return true 
 }
@@ -715,7 +750,7 @@ engine_cleanup :: proc(self: ^Engine) {
 
         deletion_queue_destroy(&frame.deletion_queue)
     }
-    
+    memory_manager_deinit(&self.memory_manager) 
     deletion_queue_destroy(&self.main_deletion_queue)
     descriptor_allocator_destroy(&self.global_descriptor_allocator)
     engine_destroy_swapchain(self)
@@ -728,5 +763,3 @@ engine_cleanup :: proc(self: ^Engine) {
 
     destroy_window(self.window)
 }
-
-

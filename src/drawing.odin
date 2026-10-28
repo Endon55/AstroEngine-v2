@@ -39,7 +39,12 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
         extent = {width = self.draw_extent.width, height = self.draw_extent.height},
     }
     vk.CmdSetScissor(cmd, 0, 1, & scissor)
-
+    if self.scene.wireframe_mode {
+        vk.CmdSetPolygonModeEXT(cmd, .LINE)
+    }
+    else {
+        vk.CmdSetPolygonModeEXT(cmd, .FILL)
+    }
     game_manager_game_render(&self.game_manager, &self.scene, self, cmd)
 
     gpu_scene_data_buffer := create_buffer(self, size_of(GPU_Scene_Data), {.UNIFORM_BUFFER}, .CPU_TO_GPU) or_return

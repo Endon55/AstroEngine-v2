@@ -11,9 +11,9 @@ import "core:thread"
 import "core:sync/chan"
 import "core:fmt"
 import "core:reflect"
+import "core:math/rand"
 
 import vk "vendor:vulkan"
-import im "libs:imgui"
 
 
 
@@ -94,11 +94,15 @@ clean_tmp_dir :: proc(self: ^Project) {
 
 game_manager_init :: proc(self: ^Game_Manager, engine: ^Engine, path_to_project: string, allocator:=context.allocator) ->(ok:bool) {
 
+    seed: u64 = 40
+    log.debugf("Setting the seed for the random generator to:")
+    rand.reset(seed)
+
     when ODIN_DEBUG {
         
         self.game_logger = log.create_console_logger(lowest = .Debug, opt = {.Level, .Terminal_Color}, ident = "GAME")
 
-        mem.tracking_allocator_init(&self.game_allocator_track, DEFAULT_ALLOCATOR)
+        mem.tracking_allocator_init(&self.game_allocator_track, GLOBALS.DEFAULT_ALLOCATOR)
         self.game_allocator = mem.tracking_allocator(&self.game_allocator_track)
     }
 
@@ -134,7 +138,6 @@ game_manager_init :: proc(self: ^Game_Manager, engine: ^Engine, path_to_project:
         log.errorf("Failed to spawn the game compiler thread")
         return false
     }
-    //game_manager_init_library(&self.project, self, engine) or_return
     
       return true
 }
@@ -154,6 +157,7 @@ game_manager_update :: proc(self: ^ Game_Manager, engine: ^Engine) {
             self.library.build_status = build_status
 
             if !self.game_initialized {
+                //init calls reload
                 game_manager_game_init(self, &engine.scene, engine)
             } else {
                 game_manager_game_reload(self, &engine.scene, engine)
@@ -483,16 +487,9 @@ GAME_DRAW_UI_FUNC :: #type proc(self: ^Scene, engine: ^Engine,) ->(ok:bool)
 GAME_DEINIT_FUNC :: #type proc(self: ^Scene, engine: ^Engine,) ->(ok:bool)
 GAME_BUILD_PIPELINES_FUNC :: #type proc(self: ^Scene, engine: ^Engine,) ->(ok:bool)
 // Per-module global state that must be re-established inside game.so.
-Game_Globals :: struct {
-    vk_proc_address:  rawptr,
-    vk_instance:      vk.Instance,
-    imgui_context:    ^im.Context,
-    imgui_alloc_func: im.MemAllocFunc,
-    imgui_free_func:  im.MemFreeFunc,
-    imgui_user_data:  rawptr,
-}
 
-GAME_RELOAD_FUNC :: #type proc(self: ^Scene, engine: ^Engine, globals: Game_Globals) ->(ok:bool,)
+
+GAME_RELOAD_FUNC :: #type proc(self: ^Scene, engine: ^Engine, globals: ^Engine_Globals) ->(ok:bool,)
 
 
 GameAPI :: struct {
@@ -609,17 +606,11 @@ game_manager_game_reload :: proc(self: ^Game_Manager, scene: ^ Scene, engine: ^E
     if self.library.api.reload== nil {
         return
     } 
-    globals := Game_Globals {
-        vk_proc_address = rawptr(vk.GetInstanceProcAddr),
-        vk_instance     = engine.vk_instance,
-        imgui_context   = im.GetCurrentContext(),
-    }
-    im.GetAllocatorFunctions(&globals.imgui_alloc_func, &globals.imgui_free_func, &globals.imgui_user_data)
 
     context.allocator = self.game_allocator
     context.logger = self.game_logger
 
-    if !self.library.api.reload(scene, engine, globals) {
+    if !self.library.api.reload(scene, engine, GLOBALS) {
         context.logger = engine.logger
         log.errorf("Game failed to reload properly")
     }

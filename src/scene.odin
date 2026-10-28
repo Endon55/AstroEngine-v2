@@ -1,6 +1,5 @@
 package astro
 
-import "base:builtin"
 import la "core:math/linalg"
 import "core:strings"
 import vk "vendor:vulkan"
@@ -57,6 +56,7 @@ Scene :: struct {
     draw_func_scene: SCENE_DRAW_FUNC,
     deinit_func_scene: SCENE_INIT_FUNC,
     scene_data_ptr: rawptr,
+    wireframe_mode: bool,
 }
 
 scene_init :: proc(scene: ^Scene, init_func: SCENE_INIT_FUNC = nil, draw_func: SCENE_DRAW_FUNC = nil, deinit_func: SCENE_INIT_FUNC = nil, allocator := context.allocator) {
@@ -88,7 +88,7 @@ scene_add_mesh_node :: proc(
 
     if len(name) > 0 {
         // Callers in game.so pass literals that live in the library and dangle after a hot reload.
-        name_idx := append_and_get_idx(&scene.node_names, strings.clone(name, ENGINE_ALLOCATOR))
+        name_idx := append_and_get_idx(&scene.node_names, strings.clone(name, GLOBALS.ENGINE_ALLOCATOR))
         scene.name_for_node[u32(node)] = name_idx
     }
 

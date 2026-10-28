@@ -55,6 +55,7 @@ Physical_Device::struct{
     features_12: vk.PhysicalDeviceVulkan12Features,
     features_13: vk.PhysicalDeviceVulkan13Features,
     features_descriptor_buffers: vk.PhysicalDeviceDescriptorBufferFeaturesEXT,
+    features_dynamic_state_3: vk.PhysicalDeviceExtendedDynamicState3FeaturesEXT,
     extensions: []vk.ExtensionProperties,
     surface_capabilities: vk.SurfaceCapabilitiesKHR,
     surface_formats: []vk.SurfaceFormatKHR,
@@ -70,6 +71,7 @@ Vulkan_Feature_Requirements::struct{
     device_features_12: vk.PhysicalDeviceVulkan12Features,
     device_features_13: vk.PhysicalDeviceVulkan13Features,
     device_features_descriptor_buffers: vk.PhysicalDeviceDescriptorBufferFeaturesEXT,
+    device_features_dynamic_state_3: vk.PhysicalDeviceExtendedDynamicState3FeaturesEXT,
     device_extensions: [dynamic]cstring,
 }
 
@@ -213,6 +215,8 @@ create_vk_logical_device :: proc(self: ^Vulkan_Creation_Context)  -> (ok: bool,)
     
     vk_check(vk.CreateDevice(self.physical_device.vk_physical_device, &device_create_info, nil, &self.vk_device)) or_return
 
+    vk.load_proc_addresses(self.vk_device)
+
     self.swapchain_context.physical_device = self.physical_device
     self.swapchain_context.vk_device = self.vk_device
     return true
@@ -316,9 +320,14 @@ query_physical_device ::proc(self: ^Physical_Device, surface: vk.SurfaceKHR){
     vk.GetPhysicalDeviceProperties2(self.vk_physical_device, &properties2)
 
     vk.GetPhysicalDeviceFeatures(self.vk_physical_device, &self.features)
+
+    self.features_dynamic_state_3 = {
+        sType = .PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT,
+        pNext = nil,
+    }
     self.features_descriptor_buffers = {
         sType = .PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
-        pNext = nil,
+        pNext = &self.features_dynamic_state_3,
     }
     self.features_13 = {
         sType = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -424,7 +433,8 @@ supports_all_features :: proc(self: Physical_Device, reqs: Vulkan_Feature_Requir
             compare_features_structs(self.features_11, reqs.device_features_11) &&
             compare_features_structs(self.features_12, reqs.device_features_12) &&
             compare_features_structs(self.features_13, reqs.device_features_13) &&
-            compare_features_structs(self.features_descriptor_buffers, reqs.device_features_descriptor_buffers)
+            compare_features_structs(self.features_descriptor_buffers, reqs.device_features_descriptor_buffers) &&
+            compare_features_structs(self.features_dynamic_state_3, reqs.device_features_dynamic_state_3) 
 }
 
 

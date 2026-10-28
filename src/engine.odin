@@ -8,16 +8,15 @@ import "base:runtime"
 import "vendor:glfw"
 import vk "vendor:vulkan"
 
-import "libs:vkb"
 import vma "libs:vma"
+import im "libs:imgui"
 
 
 TITLE :: "Astro Engine v2"
 DEFAULT_WINDOW_EXTENT :: vk.Extent2D{1280, 678}
 DEFAULT_BACKGROUND :: Compute_Effect_Kind(.Sky)
 SWAPCHAIN_FRAMES_BUFFERED :: 2
-DEFAULT_ALLOCATOR : runtime.Allocator
-ENGINE_ALLOCATOR : runtime.Allocator
+GLOBALS : ^Engine_Globals
 
 /*
     Engine remaps the coordinate space to something more understandable as a lay-person such as the dumbass coding this.
@@ -27,6 +26,7 @@ ENGINE_ALLOCATOR : runtime.Allocator
     If we're moving on a flat surface in 3d space then all that changes is the xy coordinates.
     The final view matrix contains the shift and should have negligible performance penalty.
 */
+
 
 Engine::struct {
     allocator: runtime.Allocator,
@@ -89,7 +89,7 @@ Engine::struct {
     default_sampler_linear: vk.Sampler,
     default_sampler_nearest: vk.Sampler,
     single_image_layout: Descriptor_Layout,
-
+    samplers: Engine_Samplers,
     default_material_data: Material_Instance,
     metal_rough_material: Metallic_Roughness,
     scene_layout: Descriptor_Layout,
@@ -100,6 +100,35 @@ Engine::struct {
     scene_data: GPU_Scene_Data,
 
 }
+
+Engine_Globals :: struct {
+    DEFAULT_ALLOCATOR : runtime.Allocator,
+    ENGINE_ALLOCATOR : runtime.Allocator,
+    vk_proc_address:  rawptr,
+
+    vk_physical_device: vk.PhysicalDevice,
+    vk_surface: vk.SurfaceKHR,
+    vk_device: vk.Device,
+    vk_context: ^Vulkan_Creation_Context,
+    vk_instance:      vk.Instance,
+
+    imgui_context:    ^im.Context,
+    imgui_alloc_func: im.MemAllocFunc,
+    imgui_free_func:  im.MemFreeFunc,
+    imgui_user_data:  rawptr,
+
+    main_deletion_queue: ^Deletion_Queue,
+    input: ^Input,
+    memory_manager: ^Memory_Manager,
+    shader_manager: ^Shader_Manager, 
+    samplers: ^Engine_Samplers,
+
+    window: glfw.WindowHandle,
+    window_extent: ^vk.Extent2D,
+
+    scene: ^Scene,
+}
+
 Frame_Data :: struct {
     command_pool: vk.CommandPool,
     main_command_buffer : vk.CommandBuffer,
@@ -186,44 +215,6 @@ engine_run :: proc(self: ^Engine) -> (ok: bool) {
             glfw.WaitEvents()
             timer_init(&t, monitor_info.refresh_rate)
             continue
-        }
-        speed :f32 = 1.0 * f32(t.delta_time)
-        if glfw.GetKey(self.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS {
-            speed = speed * 2
-        }
-        //Rotate Camera
-        if glfw.GetKey(self.window, glfw.KEY_Q) == glfw.PRESS {
-            camera_add_rotation(&self.scene.camera, {0,speed, 0}) 
-        }
-        if glfw.GetKey(self.window, glfw.KEY_E) == glfw.PRESS {
-            camera_add_rotation(&self.scene.camera, {0,-speed, 0}) 
-        }
-        //Move Cardinally
-        if glfw.GetKey(self.window, glfw.KEY_W) == glfw.PRESS {
-            camera_move_forward(&self.scene.camera, speed) 
-        }
-        if glfw.GetKey(self.window, glfw.KEY_S) == glfw.PRESS {
-            camera_move_backward(&self.scene.camera, speed) 
-        }
-        if glfw.GetKey(self.window, glfw.KEY_A) == glfw.PRESS {
-            camera_move_left(&self.scene.camera, speed) 
-        }
-        if glfw.GetKey(self.window, glfw.KEY_D) == glfw.PRESS {
-            camera_move_right(&self.scene.camera, speed) 
-        }
-        if glfw.GetKey(self.window, glfw.KEY_SPACE) == glfw.PRESS {
-            camera_move_up(&self.scene.camera, speed) 
-        }
-        if glfw.GetKey(self.window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS ||
-            glfw.GetKey(self.window, glfw.KEY_C) == glfw.PRESS{
-            camera_move_down(&self.scene.camera, speed) 
-        }
-        if glfw.GetKey(self.window, glfw.KEY_R) == glfw.PRESS {
-            self.scene.camera.position = {0,0,0}
-        }
-
-        if glfw.GetMouseButton(self.window, glfw.MOUSE_BUTTON_RIGHT) == glfw.PRESS{
-            camera_add_rotation(&self.scene.camera, {-self.input.mouse_delta.y,  -self.input.mouse_delta.x, 0} * speed) 
         }
 
         timer_tick(&t)
