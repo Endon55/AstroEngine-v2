@@ -16,6 +16,7 @@ Allocated_Buffer :: struct {
     allocator: vma.Allocator, 
     gpu_address: vk.DeviceAddress,
     cpu_write_ptr: rawptr,
+    usage: vk.BufferUsageFlags,
 }
 
 Allocated_Buffer_View :: struct {
@@ -187,6 +188,7 @@ create_buffer :: proc(self: ^Engine, alloc_size: vk.DeviceSize, usage: vk.Buffer
         flags = {.MAPPED, .DEDICATED_MEMORY},
     }
     new_buffer.allocator = self.vma_allocator
+    new_buffer.usage = usage
 
     vk_check(vma.CreateBuffer(self.vma_allocator, buffer_info, vma_alloc_info, &new_buffer.buffer, &new_buffer.allocation, &new_buffer.info),"Failed to create vulkan GPU buffer", loc) or_return
     new_buffer.size = alloc_size

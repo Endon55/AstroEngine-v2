@@ -39,18 +39,25 @@ Memory_Reference :: struct {
     size: vk.DeviceSize,
 }
 
-Texture_Reference :: struct {
-    image: ^Allocated_Image,
-    index: u32,
-    gpu_address: vk.DeviceAddress,
-}
-
 Arena_Reference :: struct {
     arena_address: vk.DeviceAddress,
     arena_offset: vk.DeviceSize,
     descriptor_size: vk.DeviceSize,
     frames_buffered: vk.DeviceSize,
 }
+
+Texture_Reference :: struct {
+    image: Allocated_Image,
+    heap_ref: Heap_Reference,
+}
+
+Heap_Reference:: struct {
+    heap:^Heap,
+    index: u32,
+    gpu_address: vk.DeviceAddress,
+    cpu_write_ptr: rawptr,
+}
+
 
 Ping_Pong_Reference :: struct {
     textures: [2]Texture_Reference,
@@ -77,7 +84,6 @@ Heap :: struct {
     descriptor_size: vk.DeviceSize,
     buffer: Allocated_Buffer_View,
 }
-
 Descriptor_Arena:: struct {
     size: vk.DeviceSize,
     bump_offset: vk.DeviceSize,
@@ -114,7 +120,7 @@ Memory_Manager :: struct {
 
 
 memory_manager_init :: proc(self:^ Memory_Manager, engine: ^Engine)->(ok:bool) {
-    
+    GLOBALS.memory_manager = self 
     self.vk_device = engine.vk_device
     self.physical_device = &engine.vk_context.physical_device
     self.device_limits = engine.vk_context.physical_device.properties.limits
@@ -147,6 +153,12 @@ memory_manager_init :: proc(self:^ Memory_Manager, engine: ^Engine)->(ok:bool) {
     init_descriptor_arena(self, engine) or_return
     init_uniform_buffers(self, engine) or_return
     init_universal_set(self, engine) or_return
+
+    for sampler in Default_Sampler {
+        memory_manager_register_sampler(GLOBALS.samplers.samplers[u32(sampler)]) 
+    }
+
+
     return true
 }
 
@@ -156,20 +168,21 @@ init_universal_set :: proc(self:^ Memory_Manager, engine:^Engine) ->(ok:bool,) {
     universal := &self.universal_heap
     binding_count: u32 = u32(len(self.universal_heap.heaps))
 
-    binding_flags := vk.DescriptorBindingFlags {
-        .PARTIALLY_BOUND,
-    }
-
-    layout_binding_flags_info := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
-        sType = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-        bindingCount = binding_count,
-        pBindingFlags = &binding_flags,
-    }
+    binding_flags:[]vk.DescriptorBindingFlags = make([]vk.DescriptorBindingFlags, binding_count)
+    defer delete(binding_flags)
     bindings:[]vk.DescriptorSetLayoutBinding = make([]vk.DescriptorSetLayoutBinding, binding_count)
     defer delete(bindings)
 
-    for i in 0..<binding_count{
+  for i in 0..<binding_count{
         bindings[i] = self.universal_heap.heaps[i].layout_binding
+        binding_flags[i] = {
+            .PARTIALLY_BOUND
+        }
+    }
+    layout_binding_flags_info := vk.DescriptorSetLayoutBindingFlagsCreateInfo {
+        sType = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+        bindingCount = binding_count,
+        pBindingFlags = raw_data(binding_flags),
     }
 
     layout_info := vk.DescriptorSetLayoutCreateInfo {
@@ -220,19 +233,21 @@ init_universal_set :: proc(self:^ Memory_Manager, engine:^Engine) ->(ok:bool,) {
     vk_check(vk.CreatePipelineLayout(self.vk_device, &pipeline_layout_info, nil, &universal.pipeline.vk_layout), "Failed to create Master Pipeline Layout") or_return
     deletion_queue_push(&engine.main_deletion_queue, universal.pipeline.vk_layout)
 
+    usage:vk.BufferUsageFlags = {.RESOURCE_DESCRIPTOR_BUFFER_EXT, .SHADER_DEVICE_ADDRESS, .SAMPLER_DESCRIPTOR_BUFFER_EXT}
+    
     buffer_info := vk.BufferCreateInfo {
         sType = .BUFFER_CREATE_INFO,
         size = set.total_set_size,
-        usage = {.RESOURCE_DESCRIPTOR_BUFFER_EXT, .SHADER_DEVICE_ADDRESS},
+        usage = usage,
     }
     alloc_info := vma.AllocationCreateInfo {
         usage = .AUTO,
         flags = {.HOST_ACCESS_SEQUENTIAL_WRITE, .MAPPED},
     }
-
     buffer:= &universal.set_buffer
     vk_check(vma.CreateBuffer(self.vma_allocator, buffer_info, alloc_info, &buffer.buffer, &buffer.allocation, &buffer.info), "Failed to create VMA Texture heap buffer") or_return
 
+    buffer.usage = usage 
     device_address_info := vk.BufferDeviceAddressInfo {
         sType = .BUFFER_DEVICE_ADDRESS_INFO,
         buffer = buffer.buffer,
@@ -243,9 +258,7 @@ init_universal_set :: proc(self:^ Memory_Manager, engine:^Engine) ->(ok:bool,) {
     universal.bind_info = vk.DescriptorBufferBindingInfoEXT {
         sType = .DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
         address = buffer.gpu_address,
-        usage = {
-            .RESOURCE_DESCRIPTOR_BUFFER_EXT,
-        }
+        usage = usage,
     }
     buffer.size = set.total_set_size
 
@@ -309,34 +322,6 @@ init_uniform_buffers:: proc(self:^Memory_Manager, engine: ^Engine) ->(ok:bool,) 
 }
 
 @(private="file")
-add_heap:: proc(self:^Memory_Manager, type: vk.DescriptorType, heap_size: u32,) ->(ok:bool,) {
-     
-    append(&self.universal_heap.heaps, Heap{})
-    index := len(self.universal_heap.heaps) - 1
-    heap := &self.universal_heap.heaps[index]
-
-    heap.max_size = heap_size
-    heap.type = type
-    heap.layout_binding = vk.DescriptorSetLayoutBinding {
-        binding = u32(index),
-        descriptorType = type,
-        descriptorCount = heap_size,
-        stageFlags = {.COMPUTE, .VERTEX, .FRAGMENT},
-        pImmutableSamplers = nil,
-    }
-
-    heap.freed_indexes = make([dynamic]u32)
-    heap.descriptor_size = get_descriptor_size(type)
-    return true
-}
-
-heap_get_cpu_ptr :: proc(heap:^Heap, index: u32) -> rawptr {
-    return ptr_offset(heap.buffer.cpu_write_ptr, vk.DeviceSize(index) * heap.descriptor_size)
-}
-heap_get_gpu_ptr :: proc(heap:^Heap, index: u32) -> vk.DeviceAddress {
-    return ptr_offset(heap.buffer.gpu_address, vk.DeviceSize(index) * heap.descriptor_size)
-}
-@(private="file")
 init_descriptor_arena :: proc(self:^Memory_Manager, engine:^Engine) ->(ok:bool,) {
     
     arena := &self.descriptor_arena
@@ -381,13 +366,6 @@ init_descriptor_arena :: proc(self:^Memory_Manager, engine:^Engine) ->(ok:bool,)
     return true
 }
 
-memory_manager_bind_self :: proc(self:^ Memory_Manager, cmd: vk.CommandBuffer) {
-    //
-    // vk.CmdBindDescriptorSets(cmd, .COMPUTE, self.texture_heap.pipeline_layout, 0, 1, &self.texture_heap.set, 0, nil,)
-    // vk.CmdBindDescriptorSets(cmd, .GRAPHICS, self.texture_heap.pipeline_layout, 0, 1, &self.texture_heap.set, 0, nil,)
-
-}
-
 memory_manager_advance_frame :: proc(self: ^Memory_Manager) {
 
     //send all data to gpu.
@@ -401,8 +379,6 @@ memory_manager_advance_frame :: proc(self: ^Memory_Manager) {
     self.write_frame = self.write_frame % DATA_FRAMES_BUFFERED 
 
     self.uniform.frame_ptr = ptr_offset(self.uniform.ring_buffer.cpu_write_ptr, self.uniform.frame_buffer_size * vk.DeviceSize(self.write_frame))
-
-
 }
 
 memory_manager_bind_uniform :: proc(self: ^Memory_Manager, size: u32) -> (memref:Memory_Reference) {
@@ -454,38 +430,44 @@ ptr_offset_raw :: proc(ptr:rawptr, offset:uint) -> rawptr {
     return rawptr(uintptr(ptr) + uintptr(offset))
 }
 
-memory_manager_register_texture :: proc(image: ^Allocated_Image) ->(texture_reference: Texture_Reference, ok:bool,) {
+memory_manager_register_sampler :: proc(vk_sampler: vk.Sampler) ->(reference: Heap_Reference, ok:bool,) {
+    memory_manager:= GLOBALS.memory_manager
+    heap := &memory_manager.universal_heap.heaps[1] 
+    universal := &memory_manager.universal_heap
+
+    reference = heap_register_index(heap) or_return
+    sampler:= vk_sampler
+    
+    get_info := vk.DescriptorGetInfoEXT {
+        sType = .DESCRIPTOR_GET_INFO_EXT,
+        type = heap.type,
+        data = {pSampler = &sampler},
+    }
+
+    vk.GetDescriptorEXT(GLOBALS.vk_device, &get_info, int(heap.descriptor_size), reference.cpu_write_ptr)
+
+    return reference, true
+}
+
+
+memory_manager_register_texture :: proc(image: Allocated_Image) ->(texture_reference: Texture_Reference, ok:bool,) {
     memory_manager:= GLOBALS.memory_manager
     heap := &memory_manager.universal_heap.heaps[0] 
     universal := &memory_manager.universal_heap
-    if len(heap.freed_indexes) > 0 {
-        texture_reference.index = pop(&heap.freed_indexes)
-    } 
-    else if heap.next_index >= heap.max_size {
-        log.errorf("No more room in heap")
-        return texture_reference, false
-    }
-    else {
-        texture_reference.index = heap.next_index
-    }
+    texture_reference.heap_ref = heap_register_index(heap) or_return
     texture_reference.image = image
     descriptor_image_info := vk.DescriptorImageInfo {
         imageView = texture_reference.image.image_view,
         imageLayout = .SHADER_READ_ONLY_OPTIMAL,
     } 
+
     get_info := vk.DescriptorGetInfoEXT {
         sType = .DESCRIPTOR_GET_INFO_EXT,
         type = heap.type,
         data = {pSampledImage = &descriptor_image_info},
     }
-    texture_reference.gpu_address = heap_get_gpu_ptr(heap, texture_reference.index)
-    dst := heap_get_cpu_ptr(heap, texture_reference.index)
 
-    vk.GetDescriptorEXT(GLOBALS.vk_device, &get_info, int(heap.descriptor_size), dst)
-
-    if texture_reference.index == heap.next_index{
-        heap.next_index += 1
-    }
+    vk.GetDescriptorEXT(GLOBALS.vk_device, &get_info, int(heap.descriptor_size), texture_reference.heap_ref.cpu_write_ptr)
 
     return texture_reference, true
 }
@@ -538,4 +520,74 @@ memory_manager_deinit :: proc(self: ^ Memory_Manager) {
         delete(heap.freed_indexes)
     }
     delete(self.universal_heap.heaps)
+}
+
+
+
+
+/*
+    ----------------HEAPS---------------
+*/
+@(private="file")
+add_heap:: proc(self:^Memory_Manager, type: vk.DescriptorType, heap_size: u32,) ->(ok:bool,) {
+     
+    append(&self.universal_heap.heaps, Heap{})
+    index := len(self.universal_heap.heaps) - 1
+    heap := &self.universal_heap.heaps[index]
+    log.infof("Heap: %v", index)
+
+    heap.max_size = heap_size
+    heap.type = type
+    heap.layout_binding = vk.DescriptorSetLayoutBinding {
+        binding = u32(index),
+        descriptorType = type,
+        descriptorCount = heap_size,
+        stageFlags = {.COMPUTE, .VERTEX, .FRAGMENT},
+        pImmutableSamplers = nil,
+    }
+
+    heap.freed_indexes = make([dynamic]u32)
+    heap.descriptor_size = get_descriptor_size(type)
+    return true
+}
+
+heap_return_index :: proc(heap: ^Heap, index: u32,) {
+    if index == heap.next_index - 1 {
+        heap.next_index -= 1
+    }
+    else {
+        append(&heap.freed_indexes, index)
+    }
+}
+
+heap_register_index :: proc(heap:^ Heap) -> (reference: Heap_Reference, ok:bool) {
+    memory_manager:= GLOBALS.memory_manager
+    universal := &memory_manager.universal_heap
+    if len(heap.freed_indexes) > 0 {
+        reference.index = pop(&heap.freed_indexes)
+    } 
+    else if heap.next_index >= heap.max_size {
+        log.errorf("No more room in heap")
+        return reference, false
+    }
+    else {
+        reference.index = heap.next_index
+    }
+    reference.gpu_address = heap_get_gpu_ptr(heap, reference.index)
+    reference.cpu_write_ptr = heap_get_cpu_ptr(heap, reference.index)
+
+    if reference.index == heap.next_index{
+        heap.next_index += 1
+    }
+
+    return reference, true
+}
+
+
+heap_get_cpu_ptr :: proc(heap:^Heap, index: u32) -> rawptr {
+    return ptr_offset(heap.buffer.cpu_write_ptr, vk.DeviceSize(index) * heap.descriptor_size)
+}
+
+heap_get_gpu_ptr :: proc(heap:^Heap, index: u32) -> vk.DeviceAddress {
+    return ptr_offset(heap.buffer.gpu_address, vk.DeviceSize(index) * heap.descriptor_size)
 }

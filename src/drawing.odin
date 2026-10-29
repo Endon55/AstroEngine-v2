@@ -178,7 +178,6 @@ engine_draw ::proc(self: ^Engine) -> (ok: bool){
     transition_image(cmd, self.draw_image.image, .UNDEFINED, .GENERAL)
 
     engine_draw_background(self, cmd) or_return
-    memory_manager_bind_self(&self.memory_manager, cmd)
 
     transition_image(cmd, self.draw_image.image, .GENERAL, .COLOR_ATTACHMENT_OPTIMAL)
     transition_image(cmd, self.depth_image.image, .UNDEFINED, .DEPTH_ATTACHMENT_OPTIMAL)

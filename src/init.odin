@@ -104,7 +104,8 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
     GLOBALS.vk_proc_address = rawptr(vk.GetInstanceProcAddr)
 
     log.debugf("Initializing Memory Manager")
-    samplers_init(&self.samplers)
+    create_engine_samplers(&self.samplers)
+    GLOBALS.samplers = &self.samplers
     memory_manager_init(&self.memory_manager, self) or_return
     self.vma_allocator = self.memory_manager.vma_allocator
     log.debugf("Initializing Swapchain")
@@ -140,7 +141,6 @@ engine_init :: proc(self: ^Engine) -> (ok: bool) {
 
     GLOBALS.main_deletion_queue = &self.main_deletion_queue
     GLOBALS.input = &self.input
-    GLOBALS.memory_manager = &self.memory_manager
     GLOBALS.shader_manager = &self.shader_manager
 
     GLOBALS.scene = &self.scene
@@ -176,6 +176,7 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
         },
         device_features = {
             fillModeNonSolid = true,
+            shaderSampledImageArrayDynamicIndexing = true,
         },
         device_features_11 = {
             sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
@@ -185,7 +186,10 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
             sType = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
             bufferDeviceAddress = true,
             descriptorIndexing = true,
+            runtimeDescriptorArray = true,
             vulkanMemoryModelAvailabilityVisibilityChains = false,
+            descriptorBindingPartiallyBound = true,
+            shaderSampledImageArrayNonUniformIndexing = true,
         },
         device_features_13 = {
             sType =.PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,

@@ -595,8 +595,6 @@ validate_input_outputs :: proc(stage_params:^[dynamic]Stage_Params) ->(ok:bool,)
                 input := next.inputs[input_index]
             found: bool
             if input.built_in != -1 || input.location == bits.U32_MAX do continue
-
-
         for output_index in 0..< current.output_count {
             output := current.outputs[output_index]
                 // log.debugf("Stage: %v, Input:%v, Location: %v, Format: %v", next.stage, input.name, input.location, input.format)
@@ -624,7 +622,7 @@ validate_input_outputs :: proc(stage_params:^[dynamic]Stage_Params) ->(ok:bool,)
                 }
             }
             if !found {
-                log.errorf("Stage: %v Input:%v Location: %v Format: %v doesn't have an equal location in Stage %v", next.stage, input.name, input.location, input.format, next.stage)
+                log.errorf("Stage: %v Input:%v Location: %v Format: %v doesn't have an equal location in Stage %v", next.stage, input.name, input.location, input.format, current.stage)
                 log.errorf("Double check that variables are used")
                 
                 return false

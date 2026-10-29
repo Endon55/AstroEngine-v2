@@ -204,8 +204,9 @@ generate_plane :: proc (engine: ^Engine, meshes: ^Mesh_Asset_List, size_x, size_
             next_row_index :u32 = (y + 1) * x_vertices + x
 
             indices[index] = row_index
-            indices[index + 1] = row_index + 1
-            indices[index + 2] = next_row_index + 1
+
+            indices[index + 1] = next_row_index + 1
+            indices[index + 2] = row_index + 1
 
             indices[index + 3] = row_index
             indices[index + 4] = next_row_index
