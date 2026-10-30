@@ -1,6 +1,7 @@
 package astro
 
 import "core:log"
+import "core:strings"
 import vk "vendor:vulkan"
 import "base:runtime"
 /*
@@ -34,6 +35,11 @@ Shader_Pipeline :: struct {
     resources: [dynamic]Shader_Resource,
     binding_parameters: Binding_Parameters,
     set_arena_references: []Arena_Reference,
+    // Pipelines built from one multi-entry-point module share a layout and descriptor
+    // set. Exactly one Shader_Pipeline in the group owns those, so destroying every
+    // member doesn't double-free them.
+    owns_layout: bool,
+    owns_resources: bool,
 }
 
 Binding_Parameters :: struct {
@@ -111,26 +117,30 @@ shader_pipeline_bind :: proc(self: ^Shader_Pipeline, cmd: vk.CommandBuffer, engi
 
 
 shader_pipeline_destroy :: proc(self:^Shader_Pipeline,) {
+    if self.owns_resources {
+        delete(self.resources)
 
-    delete(self.resources)
-
-    delete(self.binding_parameters.set_buffer_indices)
-    delete(self.binding_parameters.set_buffer_frame_offsets)
-    delete(self.binding_parameters.buffer_infos)
-    delete(self.set_arena_references)
-
-    // Set 0 is the shared texture heap layout, which the memory manager owns.
-    for &set_layout, i in self.pipeline_layout.set_layouts {
-        if i == 0 {
-            continue
-        }
-        delete(set_layout.binding_layouts)
-        vk.DestroyDescriptorSetLayout(self.vk_device, set_layout.vk_layout, nil)
+        delete(self.binding_parameters.set_buffer_indices)
+        delete(self.binding_parameters.set_buffer_frame_offsets)
+        delete(self.binding_parameters.buffer_infos)
+        delete(self.set_arena_references)
     }
-    delete(self.pipeline_layout.set_layouts)
+
+    if self.owns_layout {
+        // Set 0 is the shared texture heap layout, which the memory manager owns.
+        for &set_layout, i in self.pipeline_layout.set_layouts {
+            if i == 0 {
+                continue
+            }
+            delete(set_layout.binding_layouts)
+            vk.DestroyDescriptorSetLayout(self.vk_device, set_layout.vk_layout, nil)
+        }
+        delete(self.pipeline_layout.set_layouts)
+        vk.DestroyPipelineLayout(self.vk_device, self.pipeline_layout.vk_layout, nil)
+    }
 
     vk.DestroyPipeline(self.vk_device, self.pipeline, nil)
-    vk.DestroyPipelineLayout(self.vk_device, self.pipeline_layout.vk_layout, nil)
+    self^ = {}
 }
 
 Graphics_Pipeline_Options :: struct {
@@ -167,6 +177,9 @@ Pipeline_Builder_Base :: struct {
 Compute_Pipeline_Builder :: struct {
     using base: Pipeline_Builder_Base,
     shaders: Compute_Shaders,
+    // Entry point names to build pipelines for. Empty means every entry point in the
+    // shader module; build_all returns a map of entry point name -> pipeline.
+    entry_points: []string,
 }
 
 Graphics_Pipeline_Builder :: struct {
@@ -195,6 +208,12 @@ compute_pipeline_builder_set_shader :: proc(self: ^Compute_Pipeline_Builder, com
         log.errorf("Could not generate the layout for the Compute Shader, %v", loc)
         self.failed = true
     }
+}
+
+// Restricts the build to specific entry points. Leave unset (or pass an empty slice) to
+// build every entry point the shader module contains.
+compute_pipeline_builder_set_entry_points :: proc(self: ^Compute_Pipeline_Builder, entry_points: []string) {
+    self.entry_points = entry_points
 }
 
 graphics_pipeline_builder_init :: proc(self: ^Graphics_Pipeline_Builder, memory_manager: ^Memory_Manager, device: vk.Device) -> (ok: bool) {
@@ -231,10 +250,34 @@ graphics_pipeline_builder_set_shaders :: proc(self: ^Graphics_Pipeline_Builder, 
     }
 }
 
+@(private = "file")
+pipeline_builder_resolve_binding :: proc(
+    self: ^Pipeline_Builder_Base,
+    name: string,
+    loc: runtime.Source_Code_Location,
+) -> (
+    set: u32,
+    binding: u32,
+    ok: bool,
+) {
+    if location, found := self.reflect_layout.binding_by_name[name]; found {
+        return location.set, location.binding, true
+    }
+    log.errorf("Shader resource '%v' not found in reflected layout", name, location = loc)
+    for available, _ in self.reflect_layout.binding_by_name {
+        log.errorf("  available resource: %v", available)
+    }
+    self.failed = true
+    return 0, 0, false
+}
+
 /*
     Uniforms are for relatively small amounts of data taht you want to change regularly.
 */
-pipeline_builder_bind_uniform_ptr :: proc(self: ^Pipeline_Builder_Base, data: ^^$T, set:u32, binding: u32) {
+pipeline_builder_bind_uniform_ptr :: proc(self: ^Pipeline_Builder_Base, data: ^^$T, name: string, loc := #caller_location) {
+    set, binding, found := pipeline_builder_resolve_binding(self, name, loc)
+    if !found do return
+
     uniform_binding: Uniform_Binding
     uniform_binding.set = set
     uniform_binding.binding = binding
@@ -248,7 +291,9 @@ pipeline_builder_bind_uniform_ptr :: proc(self: ^Pipeline_Builder_Base, data: ^^
 /*
     Images are required to be it's own type of data.
 */
-pipeline_builder_bind_image :: proc(self: ^Pipeline_Builder_Base, texture_reference: Texture_Reference, set:u32, binding:u32) {
+pipeline_builder_bind_image :: proc(self: ^Pipeline_Builder_Base, texture_reference: Texture_Reference, name: string, loc := #caller_location) {
+    set, binding, found := pipeline_builder_resolve_binding(self, name, loc)
+    if !found do return
 
     texture_binding: Texture_Binding
 
@@ -259,7 +304,10 @@ pipeline_builder_bind_image :: proc(self: ^Pipeline_Builder_Base, texture_refere
     append(&self.shader_pipeline.resources, texture_binding)
 }
 
-pipeline_builder_bind_static_buffer :: proc(self: ^Pipeline_Builder_Base, buffer: Allocated_Buffer, set: u32, binding: u32, loc:= #caller_location) {
+pipeline_builder_bind_static_buffer :: proc(self: ^Pipeline_Builder_Base, buffer: Allocated_Buffer, name: string, loc := #caller_location) {
+    set, binding, found := pipeline_builder_resolve_binding(self, name, loc)
+    if !found do return
+
     append(&self.shader_pipeline.resources, Buffer_Binding{
         set = set,
         binding = binding,
@@ -270,7 +318,10 @@ pipeline_builder_bind_static_buffer :: proc(self: ^Pipeline_Builder_Base, buffer
     Must be a pointer to an array or a struct that doesn't contain pointers. The data will be uploaded AS-IS.
     The buffer is owned by the engine's deletion queue, it lives until the owning module (game) is torn down.
  */
-pipeline_builder_bind_new_static_buffer :: proc(self: ^Pipeline_Builder_Base, engine:^Engine, data:^$T, usage:vk.BufferUsageFlags = {.STORAGE_BUFFER}, set:u32, binding: u32,loc:= #caller_location) -> (buffer: Allocated_Buffer){
+pipeline_builder_bind_new_static_buffer :: proc(self: ^Pipeline_Builder_Base, engine:^Engine, data:^$T, name: string, usage:vk.BufferUsageFlags = {.STORAGE_BUFFER}, loc:= #caller_location) -> (buffer: Allocated_Buffer){
+    set, binding, found := pipeline_builder_resolve_binding(self, name, loc)
+    if !found do return buffer
+
     log.debugf("Binding new Static Buffer")
     ok: bool 
     buffer, ok = upload_data(engine, data, usage)
@@ -280,7 +331,11 @@ pipeline_builder_bind_new_static_buffer :: proc(self: ^Pipeline_Builder_Base, en
         return buffer
     } 
     deletion_queue_push(&engine.main_deletion_queue, buffer)
-    pipeline_builder_bind_static_buffer(self, buffer, set, binding, loc)
+    append(&self.shader_pipeline.resources, Buffer_Binding{
+        set = set,
+        binding = binding,
+        reference = buffer,
+    })
 
     return buffer 
 
@@ -295,6 +350,7 @@ pipeline_builder_bind_new_static_buffer :: proc(self: ^Pipeline_Builder_Base, en
 pipeline_create_layout :: proc(self: ^Pipeline_Builder_Base, pipeline: ^Shader_Pipeline) -> (ok: bool) {
     pipeline.vk_device = self.vk_device
     pipeline.pipeline_layout = generate_vk_layout(self.vk_device, GLOBALS.memory_manager.universal_heap.set_layout^, &self.reflect_layout) or_return
+    pipeline.owns_layout = true
     return true
 }
 
@@ -321,6 +377,7 @@ pipeline_alloc_set_memory :: proc(pipeline: ^Shader_Pipeline,) {
             pipeline.set_arena_references[i] = memory_manager_register_descriptor(pipeline.pipeline_layout.set_layouts[i].total_set_size, memory_manager.frames_buffered) 
         }
     }
+    pipeline.owns_resources = true
 }
 
 // Writes the descriptor of every resource into each frame's copy of its set.
@@ -413,32 +470,122 @@ pipeline_finalize :: proc(self: ^Pipeline_Builder_Base, engine: ^Engine, pipelin
     return true
 }
 
-compute_pipeline_builder_build :: proc(self: ^Compute_Pipeline_Builder, engine: ^Engine) -> (pipeline: Shader_Pipeline, ok: bool) {
+// Builds one compute pipeline per entry point. All of them share the union pipeline
+// layout and the same descriptor set memory, so an entry point that doesn't use a
+// binding simply ignores that descriptor. The returned map is keyed by entry point name.
+//
+// Leave `entry_points` empty to build every entry point in the shader module.
+compute_pipeline_builder_build_all :: proc(self: ^Compute_Pipeline_Builder, engine: ^Engine) -> (pipelines: map[string]Shader_Pipeline, ok: bool) {
     defer delete_reflected_shaders(&self.reflect_layout)
     if self.failed {
         log.errorf("Compute Pipeline had an error before calling _build")
         delete(self.shader_pipeline.resources)
-        return pipeline, false
-    }
-    pipeline = self.shader_pipeline
-    defer if !ok {
-        shader_pipeline_destroy(&pipeline)
+        return nil, false
     }
 
-    pipeline_create_layout(self, &pipeline) or_return
+    shader := self.shaders.compute
+    selected := self.entry_points
+    if len(selected) == 0 {
+        selected = shader.entry_points
+    }
+    if len(selected) == 0 {
+        log.errorf("Compute shader '%v' has no entry points", shader.name)
+        delete(self.shader_pipeline.resources)
+        return nil, false
+    }
+    if len(self.entry_points) > 0 {
+        for entry_point in self.entry_points {
+            found := false
+            for actual in shader.entry_points {
+                if entry_point == actual {
+                    found = true
+                    break
+                }
+            }
+            if !found {
+                log.errorf("Compute shader '%v' has no entry point '%v'", shader.name, entry_point)
+                delete(self.shader_pipeline.resources)
+                return nil, false
+            }
+        }
+    }
+
+    owner := self.shader_pipeline
+    self.shader_pipeline = {}
+    owner.owns_resources = true
+    defer if !ok {
+        if pipelines != nil {
+            for _, &pipeline in pipelines {
+                vk.DestroyPipeline(self.vk_device, pipeline.pipeline, nil)
+            }
+            compute_pipelines_destroy(pipelines)
+        }
+        shader_pipeline_destroy(&owner)
+    }
+
+    pipeline_create_layout(self, &owner) or_return
+    owner.bind_point = .COMPUTE
+    pipeline_alloc_set_memory(&owner)
+    pipeline_write_resources(&owner) or_return
 
     module := shader_get_module(self.vk_device, engine, &self.shaders.compute) or_return
-    pipeline_create_info := vk.ComputePipelineCreateInfo {
-        sType = .COMPUTE_PIPELINE_CREATE_INFO,
-        flags = {.DESCRIPTOR_BUFFER_EXT},
-        layout = pipeline.pipeline_layout.vk_layout,
-        stage = pipeline_shader_stage_create_info({.COMPUTE}, module, "main"),
-    }
-    pipeline.bind_point = .COMPUTE
-    vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &pipeline_create_info, nil, &pipeline.pipeline), "Failed to create compute pipeline") or_return
+    pipelines = make(map[string]Shader_Pipeline)
+    for entry_point in selected {
+        pipeline := owner
+        // The group owner below frees the shared layout and descriptor memory.
+        pipeline.owns_layout = false
+        pipeline.owns_resources = false
 
-    pipeline_finalize(self, engine, &pipeline) or_return
-    return pipeline, true
+        entry_point_c := strings.clone_to_cstring(entry_point, context.temp_allocator)
+        pipeline_create_info := vk.ComputePipelineCreateInfo {
+            sType = .COMPUTE_PIPELINE_CREATE_INFO,
+            flags = {.DESCRIPTOR_BUFFER_EXT},
+            layout = pipeline.pipeline_layout.vk_layout,
+            stage = pipeline_shader_stage_create_info({.COMPUTE}, module, entry_point_c),
+        }
+        if !vk_check(vk.CreateComputePipelines(self.vk_device, 0, 1, &pipeline_create_info, nil, &pipeline.pipeline), "Failed to create compute pipeline") {
+            return nil, false
+        }
+        entry_point_key := strings.clone(entry_point)
+        pipelines[entry_point_key] = pipeline
+    }
+
+    // The deletion queue is flushed in reverse order. Push the owner first so the
+    // pipelines are destroyed before the shared layout they use.
+    deletion_queue_push(&engine.main_deletion_queue, owner)
+    for entry_point in selected {
+        deletion_queue_push(&engine.main_deletion_queue, pipelines[entry_point])
+    }
+    return pipelines, true
+}
+
+// Frees the map and its entry point name keys. The pipelines themselves are owned by
+// the engine's deletion queue, so this doesn't destroy them.
+compute_pipelines_destroy :: proc(pipelines: map[string]Shader_Pipeline) {
+    for entry_point, _ in pipelines {
+        delete(entry_point)
+    }
+    delete(pipelines)
+}
+
+// Compatibility wrapper: builds every selected entry point and returns the first one.
+// Use compute_pipeline_builder_build_all when you need the whole map.
+compute_pipeline_builder_build :: proc(self: ^Compute_Pipeline_Builder, engine: ^Engine) -> (pipeline: Shader_Pipeline, ok: bool) {
+    pipelines, built := compute_pipeline_builder_build_all(self, engine)
+    if !built {
+        return {}, false
+    }
+    defer compute_pipelines_destroy(pipelines)
+
+    selected := self.entry_points
+    if len(selected) == 0 {
+        selected = self.shaders.compute.entry_points
+    }
+    if len(selected) == 0 {
+        return {}, false
+    }
+    pipeline, ok = pipelines[selected[0]]
+    return
 }
 
 graphics_pipeline_builder_build :: proc(self: ^Graphics_Pipeline_Builder, engine: ^Engine) -> (pipeline: Shader_Pipeline, ok: bool) {

@@ -15,13 +15,20 @@ import "core:math/bits"
 import vk "vendor:vulkan"
 import spirv "libs:spirv-reflect"
 
-Shader::struct {
+// Bump this when the cached SPIR-V format changes. v2 modules contain every entry
+// point in one file (v1 files held only the first entry point).
+SHADER_CACHE_VERSION :: "v2"
+
+Shader :: struct {
     name: string,
     compiled_path: string,
     source_path: string,
     stage: vk.ShaderStageFlag,
     modify_time: time.Time,
-    spirv_bytes:[]byte,
+    spirv_bytes: []byte,
+    // Every entry point contained in `spirv_bytes`, in the order Slang reports them.
+    // Multi-entry-point modules keep all their pipelines compatible with one layout.
+    entry_points: []string,
     //Not Guaranteed to be valid, call Shader_Get_Module().
     module: vk.ShaderModule,
 }
@@ -356,6 +363,8 @@ shader_manager_update_shaders :: proc(self: ^Shader_Manager, shader_dir: ^Shader
         }
 
         spirv: []byte
+        entry_points: []string
+        compiled: Slang_Compiled_Module
         stage: vk.ShaderStageFlag = shader_determine_stage(info.name)    
         if stage == ._MAX {
             log.errorf("Failed to determine shader type for: %v", info.fullpath)
@@ -372,7 +381,9 @@ shader_manager_update_shaders :: proc(self: ^Shader_Manager, shader_dir: ^Shader
         }
         relative_name := quick_concat({path_from_shader_dir, filename_stripped} ) or_return
 
-        compile_path := quick_concat({shader_dir.compiled_directory,relative_name, ".spv"}, context.allocator) or_return
+        // Bump this when the cached SPIR-V format changes. v2 modules contain every
+        // entry point in one file (v1 files held only the first entry point).
+        compile_path := quick_concat({shader_dir.compiled_directory,relative_name, ".", SHADER_CACHE_VERSION, ".spv"}, context.allocator) or_return
 
 
         shader: Shader = {
@@ -388,11 +399,19 @@ shader_manager_update_shaders :: proc(self: ^Shader_Manager, shader_dir: ^Shader
         if out_of_date
         {
             log.debugf("shader(%v) is out of date: recompiling", shader.name)
-            spirv, ok = shader_manager_compile_shader(self, shader_dir, shader.source_path) 
+            compiled, ok = shader_manager_compile_shader(self, shader_dir, shader.source_path)
             if !ok {
                 log.errorf("Failed to compile out of date shader(%v)", shader.name)
                 continue
             }
+            spirv = compiled.spirv
+            entry_points = make([]string, len(compiled.entry_points))
+            for entry_point, index in compiled.entry_points {
+                entry_points[index] = entry_point.name
+            }
+            // The names are moved into `entry_points`; don't let the module free them.
+            delete(compiled.entry_points)
+            compiled.entry_points = nil
         }
         else if self.compile_only {
             delete(shader.name)
@@ -402,9 +421,17 @@ shader_manager_update_shaders :: proc(self: ^Shader_Manager, shader_dir: ^Shader
         }
         else {
             spirv = load_file_from_disc(shader.compiled_path,) or_return
+            entry_points = spirv_entry_point_names(spirv)
+        }
+
+        if len(entry_points) == 0 {
+            log.warnf("Shader '%v' has no OpEntryPoint names; falling back to 'main'", shader.name)
+            entry_points = make([]string, 1)
+            entry_points[0] = strings.clone("main")
         }
 
         shader.spirv_bytes = spirv
+        shader.entry_points = entry_points
 
         shader.stage = stage
         if self.compile_only {
@@ -413,6 +440,10 @@ shader_manager_update_shaders :: proc(self: ^Shader_Manager, shader_dir: ^Shader
             delete(shader.spirv_bytes)
             delete(shader.source_path)
             delete(shader.compiled_path)
+            for entry_point in shader.entry_points {
+                delete(entry_point)
+            }
+            delete(shader.entry_points)
             saved or_return
             continue
         }
@@ -423,6 +454,10 @@ shader_manager_update_shaders :: proc(self: ^Shader_Manager, shader_dir: ^Shader
             delete(existing.spirv_bytes)
             delete(existing.compiled_path)
             delete(existing.source_path)
+            for entry_point in existing.entry_points {
+                delete(entry_point)
+            }
+            delete(existing.entry_points)
         }
         self.shaders[qualified_name] = shader
 
@@ -442,7 +477,7 @@ shader_manager_save_compiled_shader :: proc(self: ^Shader_Manager, shader: ^Shad
 }
 
 
-shader_manager_compile_shader :: proc(self: ^Shader_Manager, shader_dir:^ Shader_Dir, source_path: string,) -> (spirv: []byte, ok: bool) {
+shader_manager_compile_shader :: proc(self: ^Shader_Manager, shader_dir:^ Shader_Dir, source_path: string,) -> (compiled: Slang_Compiled_Module, ok: bool,) {
 
     shader_bytes := load_file_from_disc(source_path,) or_return 
     defer delete(shader_bytes)
@@ -452,28 +487,52 @@ shader_manager_compile_shader :: proc(self: ^Shader_Manager, shader_dir:^ Shader
         append(&search_paths, dir.source_directory)
     }
     defer delete(search_paths)
-    shaders: []Slang_Compiled_Shader = slang_compile_module(
+    compiled = slang_compile_module(
         &self.slang_compiler,
         string(shader_bytes),
         module_name,
         source_path,
         search_paths[:],
     ) or_return
-    if len(shaders) > 1 {
-        log.warnf("Uh oh too many shaders in array")
-    }  
-    if len(shaders) == 0 {
-        delete(shaders)
-        log.info("Uh oh zero shaders available after compilation")
-        return nil, false
+    for entry_point in compiled.entry_points {
+        log.debugf("Entry Point: %v", entry_point.name)
     }
-    result_spirv := shaders[0].spirv
-    for shader in shaders {
-        delete(shader.name)
-    }
-    delete(shaders)
 
-    return result_spirv, true
+    return compiled, true
+}
+
+// Reads the entry point names out of a SPIR-V module (OpEntryPoint). Used when a
+// compiled module is loaded from disk, so the shader manager can rebuild the entry
+// point list without recompiling.
+@(private = "file")
+spirv_entry_point_names :: proc(code: []byte, allocator := context.allocator) -> []string {
+    SPIRV_MAGIC :: 0x07230203
+    SPIRV_HEADER_WORDS :: 5
+    OP_ENTRY_POINT :: 15
+
+    if len(code) < SPIRV_HEADER_WORDS * 4 || len(code) % 4 != 0 {
+        return nil
+    }
+    words := mem.slice_data_cast([]u32, code)
+    if words[0] != SPIRV_MAGIC {
+        return nil
+    }
+
+    names := make([dynamic]string, allocator)
+    for i := SPIRV_HEADER_WORDS; i < len(words); {
+        word_count := int(words[i] >> 16)
+        if word_count == 0 || i + word_count > len(words) {
+            break
+        }
+        opcode := words[i] & 0xFFFF
+        if opcode == OP_ENTRY_POINT && word_count >= 4 {
+            name := string(cstring(rawptr(&words[i + 3])))
+            append(&names, strings.clone(name, allocator))
+        }
+        i += word_count
+    }
+
+    return names[:]
 }
 shader_manager_deinit :: proc(self: ^Shader_Manager) {
     if self.hot_reload_thread != nil {
@@ -500,6 +559,10 @@ shader_manager_deinit :: proc(self: ^Shader_Manager) {
         delete(value.spirv_bytes)
         delete(value.compiled_path)
         delete(value.source_path)
+        for entry_point in value.entry_points {
+            delete(entry_point)
+        }
+        delete(value.entry_points)
     }
 
     delete(self.shaders)
@@ -545,8 +608,16 @@ Stage_Params :: struct {
     module : spirv.SpvReflectShaderModule,
 }
 
+Binding_Location :: struct {
+    set:     u32,
+    binding: u32,
+}
+
 Reflected_Shaders :: struct {
     layout: map[u32]map[u32]vk.DescriptorSetLayoutBinding,
+    // Resource name as reported by SPIRV-Reflect -> its actual set/binding.
+    // Host code binds by these names instead of hardcoding descriptor numbers.
+    binding_by_name: map[string]Binding_Location,
     push_constants: [dynamic]vk.PushConstantRange,
     stage_params: [dynamic]Stage_Params,
 }
@@ -638,6 +709,9 @@ validate_input_outputs :: proc(stage_params:^[dynamic]Stage_Params) ->(ok:bool,)
 shaders_generate_layout_raw :: proc(reflect_layout: ^Reflected_Shaders, shader: Shader) -> (ok:bool,) {
     log.debugf("----------------------------------------------------")
     log.debugf("Parsing Shader: %v", shader.name)
+    if reflect_layout.binding_by_name == nil {
+        reflect_layout.binding_by_name = make(map[string]Binding_Location)
+    }
     data_len: uint = len(shader.spirv_bytes)        
     stage := shader.stage
 
@@ -701,16 +775,44 @@ shaders_generate_layout_raw :: proc(reflect_layout: ^Reflected_Shaders, shader: 
         }
 
         set_map^[binding.binding] = binding_layout
+
+        name := string(binding.name)
+        if name != "" {
+            location := Binding_Location{set = binding.set, binding = binding.binding}
+            if existing, found := reflect_layout.binding_by_name[name]; found {
+                if existing != location {
+                    log.errorf(
+                        "Shader resource name '%v' is used for set %v binding %v and set %v binding %v",
+                        name, existing.set, existing.binding, location.set, location.binding,
+                    )
+                    return false
+                }
+            } else {
+                reflect_layout.binding_by_name[name] = location
+            }
+        }
     }
     for constant in push_constants {
         //log.infof("Push Constants - Name: %v, Size: %v, Offset: %v", constant.name, constant.size, constant.offset)
 
-        push_constants_range := vk.PushConstantRange{
+        push_constant_range := vk.PushConstantRange{
             stageFlags = {stage},
             offset = constant.offset,
             size = constant.size,
         }
-        append(&reflect_layout.push_constants, push_constants_range)
+        // A combined module can report the same range once per entry point. Vulkan
+        // forbids two ranges that expose the same stage bits, so merge identical ranges.
+        merged := false
+        for &existing in reflect_layout.push_constants {
+            if existing.offset == push_constant_range.offset && existing.size == push_constant_range.size {
+                existing.stageFlags += push_constant_range.stageFlags
+                merged = true
+                break
+            }
+        }
+        if !merged {
+            append(&reflect_layout.push_constants, push_constant_range)
+        }
     }
     stage_params.stage = stage
     return true
@@ -795,6 +897,7 @@ delete_reflected_shaders :: proc(self:^Reflected_Shaders) {
         delete(value)
     }
     delete(self.layout)
+    delete(self.binding_by_name)
 
     delete(self.push_constants)
 
