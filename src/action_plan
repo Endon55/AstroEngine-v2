@@ -1,6 +1,567 @@
-1. Create a rudamentary pbr shader.
+# Ocean Simulation Action Plan
+
+Target reference:
+`game/shaders/dual_jonswap_ocean_fft.comp.slang`
+
+Current prototype:
+- `game/shaders/source/ocean/generate_jonswap.comp.slang`
+- `game/shaders/source/ocean/ocean.vert.slang`
+- `game/shaders/source/ocean/ocean.frag.slang`
+- `game/src/ocean.odin`
+
+The current convention is now correct and should be treated as locked:
+- world is Z-up
+- ocean mesh lies in XY
+- horizontal displacement = `displacement.x`, `displacement.y`
+- vertical displacement = `displacement.z`
+- vertex shader adds `spec.xyz` directly (`ocean.vert.slang:61-62`)
+- Jacobian uses the `x/y` horizontal pair (`generate_jonswap.comp.slang:215-218`)
+
+Do not change this convention during the FFT port. Instead, adapt the reference
+(which uses X/Z horizontal and Y up) to this convention.
+
+---
+
+## Reference map
+
+Use these ranges when porting:
+
+| Topic | Reference lines |
+|---|---|
+| Resources and tuning constants | `dual_jonswap_ocean_fft.comp.slang:11-20` |
+| Spectrum parameters | `45-56` |
+| Dispersion and derivative | `58-66` |
+| Directional spread helpers | `68-104` |
+| TMA correction | `106-114` |
+| JONSWAP spectrum | `116-127` |
+| Short-wave fade | `129-131` |
+| Spectrum initialization | `133-171` |
+| Conjugate packing | `173-181` |
+| Time evolution and derivative spectra | `183-230` |
+| FFT helpers and twiddles | `232-266` |
+| FFT execution | `268-301` |
+| Assemble maps, Jacobian, foam, buoyancy | `303-342` |
+| Foam accumulation stub | `344-358` |
+
+The reference is a porting guide, not a drop-in implementation. Several pieces are
+incomplete or alternate implementations:
+- `_Buffer0.._Buffer3`, `_Step`, `ComplexExp`, and
+  `ComputeTwiddleFactorAndInputIndices` appear to be an alternate/unused FFT path.
+  Prefer the group-shared path (`ButterflyValues`, `FFT`,
+  `CS_HorizontalFFT`, `CS_VerticalFFT`, lines `248-301`).
+- `CS_AccumulateFoam` is a stub (`344-358`). Treat foam accumulation as a new
+  design task, not a straight port.
+- The reference's `_BuoyancyData = displacement.y` (`338-340`) assumes Y-up.
+  In this project that becomes `displacement.z`.
+- The reference's Jacobian assumes X/Z horizontal and Y height. It must be
+  rewritten for X/Y horizontal and Z height.
+
+---
+
+## Phase 0 - Stabilize the current prototype before starting the FFT
+
+Do this first. The FFT will be much harder to debug if the current prototype
+still has ambiguous spectrum scaling or a broken fold correction.
+
+✅✅✅ 0.1 Lock and document the axis convention✅✅✅
+
+✅ - Keep `x/y` horizontal and `z` up.
+✅ -  Rename local coordinates in `main` if needed so the second texture axis is
+  clearly `y`, not `z` (`generate_jonswap.comp.slang:93-94`).
+✅ - Add a short comment in each ocean file stating the convention:
+  `x = right, y = forward, z = up`.
+✅ - Check `inc_ocean.slang`, `ocean.vert.slang`, `ocean.frag.slang`, and
+  `generate_jonswap.comp.slang` all use the same `OceanData` layout.
+
+ ✅✅✅ 0.2 Replace the per-texel Jacobian correction with global choppiness ✅✅✅
+
+Current code multiplies the horizontal displacement by a per-texel
+`saturate(J / 0.1)` mask (`generate_jonswap.comp.slang:245-255`). This creates
+new folds because the scale field itself has a large spatial gradient.
+
+Do this:
+✅ - Remove the `dynamic_scale` multiply from `displacement.x/y`.
+- Always write the raw displacement plus `J` into the output texture.
+✅ - Add a global `lambda`/choppiness parameter. Apply it to the horizontal
+  displacement only:
+  ✅ - `displacement.x *= lambda`
+  ✅ - `displacement.y *= lambda`
+  ✅ - leave `displacement.z` as height.
+✅ - Start with `lambda = 0.5`, tune down until folds are rare.
+✅ - Keep `J` in `.w` for foam and debugging.
+✅ - Only after the FFT is stable should you consider a more advanced fold-aware
+  geometry correction.
+
+This matches the reference strategy: `_Lambda` scales horizontal displacement
+while `J` is used for foam (`dual_jonswap_ocean_fft.comp.slang:318-335`).
+
+✅✅✅ 0.3 Make the current spectrum meaningful ✅✅✅
+
+The current `jonswap_energy` is a simplified prototype. `windSpeed`, `fetch`,
+`shortWavesFade`, `alignment`, and `compute_peaking` are currently unused or
+ignored. For the FFT version this will cause the spectrum to be mis-scaled.
+
+Do this before porting:
+- Decide whether the simulation is parameterized by frequency or wavenumber. Note: This will likely change with the migration to fft, don't worry about this for now.
+- Keep the deep-water mapping `k = omega^2 / g` for the current generator.
+- Add the missing JONSWAP constants:
+  ✅ - alpha from wind/fetch
+  ✅ - peak frequency
+  ✅ - gamma / storm maturity
+  ✅ - sigma split at the peak
+  ✅ - short-wave fade
+  ✅ - directional spread
+- Use `oceanography.slang` as the local reference for JONSWAP,
+  Pierson-Moskowitz, TMA, and directional spread.
+- Cross-check against `dual_jonswap_ocean_fft.comp.slang:58-131`.
+- Remove dead code (`compute_peaking`, `rollover_fix_delta`, unused derivative
+  variables) or wire it in deliberately.
+
+Important for the FFT port: the normalization is different between frequency
+bands and wavenumber cells:
+- frequency-band amplitude: `sqrt(2 * E * delta_f)`
+- FFT initialization: `sqrt(2 * S(omega) * abs(domega/dk) / k * delta_k^2)`
+  (`dual_jonswap_ocean_fft.comp.slang:158-166`)
+
+✅✅✅ 0.4 Add debug views and controls ✅✅✅
+
+Add a debug mode before FFT work:
+✅ - visualize displacement X, Y, Z
+✅ - visualize Jacobian `J`
+✅ - visualize `lambda` and fold masks
+✅ - log/display min/max/NaN statistics for displacement and `J`
+
+Add UI controls for:
+✅ - `lambda` / choppiness
+✅ - wave scale
+✅ - wind speed
+✅ - fetch
+✅ - peak frequency
+✅ - storm maturity / gamma
+✅ - layer count (prototype only)
+✅ - time scale and pause
+
+### 0.5 Validate the prototype
+
+- Confirm waves are vertical, not sideways.
+- Confirm phase speed matches `omega / k`.
+- Confirm wavelength matches `2*pi / k`.
+- Confirm the texture wraps without seams.
+- Confirm no NaNs and no Vulkan validation errors.
+- Confirm the per-texel spikes are gone after switching to global `lambda`.
+
+Exit criteria for Phase 0:
+- The current ocean is stable, correctly oriented, and fold-free with tuned
+  `lambda`.
+- `J` is available for debugging/foam.
+- No NaN or validation errors.
+- The spectrum parameters are understood well enough to port.
+
+---
+
+## Phase 1 - Build the FFT foundation
+
+Do not start with all features. Build the FFT path in this order and verify each
+stage before moving on.
+
+### 1.1 Define the FFT resource layout
+
+Use the reference as the target:
+- 4 cascades
+- `_LengthScale0.._LengthScale3`
+- per-cascade spectrum parameters (wind sea + optional swell)
+- initial spectrum textures
+- complex spectrum textures
+- displacement textures
+- slope textures
+- optional buoyancy texture
+
+Reference: `dual_jonswap_ocean_fft.comp.slang:11-20` and `45-56`.
+
+Decide early:
+- FFT size: 256 or 512
+- number of cascades: 3-4
+- texture formats: float16 vs float32
+- whether to pack two fields per `float4`
+
+### 1.2 Implement spectrum initialization
+
+Port `CS_InitializeSpectrum` (`dual_jonswap_ocean_fft.comp.slang:133-171`):
+- deterministic per-texel seed
+- Gaussian pair generation
+- `delta_k = 2*pi / length_scale`
+- wavenumber `K`
+- low/high cutoff
+- dispersion and `domega/dk`
+- JONSWAP * directional spectrum * short-wave fade
+- optional second spectrum for swell
+- correct amplitude normalization
+
+Verify:
+- Hermitian symmetry is enforced later
+- zero/low/high cutoffs produce no NaNs
+- integrated energy is sane
+- the spectrum peaks near the requested `peak_freq`
+
+### 1.3 Implement conjugate packing
+
+Port `CS_PackSpectrumConjugate`
+(`dual_jonswap_ocean_fft.comp.slang:173-181`).
+
+Verify:
+- `h0` and `h0_conj` come from opposite wavenumbers
+- no double-counting
+- no mismatch between packed and unpacked layouts
+
+### 1.4 Implement time evolution and derivative spectra
+
+Port `CS_UpdateSpectrumForFFT`
+(`dual_jonswap_ocean_fft.comp.slang:183-230`).
+
+Verify each field:
+- `htilde`
+- `ih = (-htilde.y, htilde.x)`
+- displacement X
+- displacement Y (height in the reference; becomes Z here)
+- displacement Z (becomes Y here)
+- `dDx/dx`, `dDx/dz`, `dDy/dx`, `dDy/dz`, etc.
+- packing into the complex spectrum textures
+
+This is where most FFT bugs live. Check signs, `i` multiplication, and the
+inverse-FFT convention repeatedly.
+
+In this project's Z-up convention:
+- reference `displacementY` = height -> `displacementZ`
+- reference `displacementZ` = horizontal -> `displacementY`
+- reference Jacobian X/Z pairs -> X/Y pairs
+
+### 1.5 Implement the FFT
+
+Port the group-shared FFT path:
+- `ButterflyValues` (`232-266`)
+- `FFT` (`268-287`)
+- `CS_HorizontalFFT` (`289-294`)
+- `CS_VerticalFFT` (`296-301`)
+
+Pick one FFT path and delete/ignore the alternate `_Buffer*` path.
+
+Verify with a CPU reference:
+- forward/inverse sign convention
+- twiddle factors
+- bit-reversal / butterfly index mapping
+- horizontal then vertical passes
+- packed real fields
+- no shared-memory races
+
+A good early test: transform a known sine wave and compare the result to the
+direct spatial sum.
+
+### 1.6 Implement the assemble pass
+
+Port `CS_AssembleMaps`
+(`dual_jonswap_ocean_fft.comp.slang:303-342`) and adapt it to Z-up.
+
+In the reference:
+- `Permute` applies the checkerboard sign fix (`303-305`)
+- displacement and slope fields are unpacked (`310-322`)
+- horizontal displacement is scaled by `_Lambda` (`320`)
+- Jacobian is computed from the derivative fields (`318`)
+- slopes are divided by the compression term (`322`)
+- foam history is decayed and accumulated (`325-335`)
+- buoyancy is written for cascade 0 (`338-340`)
+
+For this project:
+- use X/Y horizontal, Z height
+- rewrite the Jacobian for X/Y
+- use `_Lambda.x` and `_Lambda.y` for X/Y choppiness
+- write `J` into the displacement `.w` or a separate texture for foam
+
+This pass replaces the current finite-difference `COMPUTE_displacement`.
+For FFT, do not finite-difference the displacement texture; the derivative
+fields already come from the spectrum.
+
+### 1.7 Wire up dispatch order and barriers
+
+Required order:
+1. initialize spectrum (when parameters change)
+2. pack conjugate
+3. update spectrum for FFT
+4. horizontal FFT
+5. vertical FFT
+6. assemble maps
+7. foam accumulation (when implemented)
+
+Rules:
+- every storage-image write followed by a read needs a barrier
+- use `GENERAL -> GENERAL` for storage images
+- use `GENERAL -> SHADER_READ_ONLY_OPTIMAL` before sampling in the graphics pass
+- keep the image layouts consistent with the descriptor layouts
+- never transition a storage image to `SHADER_READ_ONLY_OPTIMAL` while a compute
+  pass still binds it as an `RWTexture2D`
+
+The current barrier pattern in `game/src/ocean.odin:227-270` is the right shape;
+extend it for the new passes.
+
+### 1.8 First FFT render
+
+- sample cascade 0 displacement in the vertex shader
+- keep the current debug fragment shader
+- verify the FFT result matches the current direct-sum prototype
+- only then add cascades
+
+Exit criteria for Phase 1:
+- one cascade renders correctly
+- FFT output matches a CPU/direct-sum reference
+- no NaNs, no validation errors
+- displacement height is Z
+- `J` is calculated from derivative fields, not finite differences
+- barriers are clean
+
+---
+
+## Phase 2 - Make the spectrum high quality
+
+### 2.1 Proper JONSWAP parameterization
+
+- use `alpha` from wind/fetch instead of a hand-tuned scale
+- use the correct peak frequency relation
+- use `gamma` / storm maturity correctly
+- use the asymmetric sigma split
+- add TMA correction for finite depth
+- add short-wave fade
+- add directional spreading (Donelan-Banner / Cosine2s / Hasselmann)
+- add optional swell
+
+References:
+- `dual_jonswap_ocean_fft.comp.slang:58-131`
+- `game/shaders/source/ocean/oceanography.slang`
+
+### 2.2 Wavenumber-domain normalization
+
+- verify `delta_k`, `domega/dk`, and the `sqrt(...)` normalization
+- verify the integrated variance matches the requested significant wave height
+- verify the peak wavelength matches the peak period
+- verify that changing `scale` or `alpha` does not silently change the peak shape
+
+### 2.3 Multiple cascades
+
+Use separate length scales and spectra:
+- large cascade: long swell
+- medium cascade: wind sea
+- small cascade: detail
+- optional second spectrum per cascade for swell/wind-sea mixture
+
+Reference:
+- `_LengthScale0.._LengthScale3` (`18-19`)
+- per-cascade spectrum pairs (`138-166`)
+
+### 2.4 Cascade blending and tiling
+
+- sample displacement/slope maps from all cascades
+- blend by distance/LOD
+- keep tiling seamless
+- fade cascades out before their Nyquist limit
+- avoid double-counting energy between cascades
+
+Exit criteria for Phase 2:
+- the ocean looks correct at all distances
+- no visible cascade seams or popping
+- wave height/period respond physically to wind/fetch/peak settings
+- energy is conserved across cascades
+
+---
+
+## Phase 3 - Normals, foam, and geometry quality
+
+### 3.1 Normals from slopes, not finite differences
+
+Use the slope/derivative fields from the FFT:
+- reference slope construction: `dual_jonswap_ocean_fft.comp.slang:322`
+- build tangent/binormal and cross product
+- use the compression denominator to keep normals folded-aware
+- add detail normals only after the resolved normal is correct
+
+### 3.2 Foam
+
+Use the Jacobian for foam, not displacement correction:
+- `biasedJacobian = max(0, -(J - foamBias))`
+- threshold, add, decay
+- persistent history texture
+- optional advection and detail textures
+- separate historical foam from display threshold
+
+Reference:
+- `dual_jonswap_ocean_fft.comp.slang:325-335`
+- `CS_AccumulateFoam` stub (`344-358`) must be replaced
+
+### 3.3 Buoyancy and interaction
+
+If needed:
+- store height from cascade 0
+- expose a buoyancy texture/sampler
+- use it for boats/objects
+
+Reference: `dual_jonswap_ocean_fft.comp.slang:338-340` (adapt Y to Z).
+
+### 3.4 Choppiness and fold policy
+
+- expose per-axis `lambda`
+- tune for no visible folds at normal viewing distances
+- use `J` only for foam/correction diagnostics
+- if a geometric correction is still desired later, use a smooth low-frequency
+  scale or a fold-direction/eigenvalue method; do not return to a per-texel
+  hard mask
+
+Exit criteria for Phase 3:
+- normals match the displaced surface
+- foam appears in folded/breaking regions and fades naturally
+- no horizontal spikes from displacement correction
+- no visible normal seams between cascades
+
+---
+
+## Phase 4 - Rendering quality
+
+The current `ocean.frag.slang` is a debug shader. Replace it only after the
+simulation is stable.
+
+### 4.1 Water shading
+
+- Fresnel
+- reflection
+- refraction
+- depth-based absorption
+- subsurface scattering / translucency
+- sun specular
+- sky/environment reflection
+- foam blending
+- distance fog / aerial perspective
+
+### 4.2 Detail
+
+- detail normal maps
+- foam detail
+- LOD fade
+- cascade blending in the shader
+- underwater/above-water color split
+
+### 4.3 Presentation
+
+- tone mapping
+- bloom on sun glints
+- temporal stability
+- no aliasing on crests
+
+Exit criteria for Phase 4:
+- water reads as water at close, medium, and far distances
+- foam and normals are stable in motion
+- no visible LOD popping
+
+---
+
+## Phase 5 - Performance and robustness
+
+### 5.1 Performance
+
+- profile each compute pass
+- choose FFT size vs cascade count
+- use FP16 where possible
+- pack fields to reduce bandwidth
+- avoid redundant spectrum updates when parameters are unchanged
+- avoid CPU/GPU stalls
+- consider async compute for the FFT chain
+- keep the number of cascades and texture samples reasonable
+
+### 5.2 Robustness
+
+- validate every image layout/barrier
+- check for NaN/Inf in displacement and `J`
+- handle window resize
+- handle shader hot reload
+- handle parameter changes without reallocating every frame
+- add a fallback/debug path if the FFT fails
+
+### 5.3 Tests
+
+- CPU FFT reference test
+- spectrum integration test
+- peak frequency/wavelength test
+- Jacobian sign test on a known wave
+- cascade energy test
+- visual regression screenshots
+- Vulkan validation in debug builds
+
+Exit criteria for Phase 5:
+- stable frame time
+- no validation errors
+- deterministic results across runs
+- no memory growth
+
+---
+
+## Phase 6 - Stretch goals
+
+Only after the core ocean is high quality:
+- wave breaking/spray
+- underwater rendering and caustics
+- boat/object interaction
+- shoreline/shallow-water effects
+- currents
+- weather presets
+- GPU-driven LOD
+- temporal upsampling
+
+---
+
+## Recommended immediate order
+
+1. Remove the per-texel `dynamic_scale` displacement multiply.
+2. Add global `lambda` on `displacement.x/y`; keep `J` in `.w`.
+3. Add debug views for displacement and `J`.
+4. Fix/complete the current JONSWAP parameters so the spectrum is meaningful.
+5. Verify the current prototype is fold-free with tuned `lambda`.
+6. Port `CS_InitializeSpectrum` (`dual_jonswap_ocean_fft.comp.slang:133-171`)
+   into a standalone FFT test.
+7. Port conjugate packing (`173-181`).
+8. Port time evolution and derivative spectra (`183-230`).
+9. Port the FFT (`232-301`) and validate against a CPU reference.
+10. Port assemble maps (`303-342`) and replace the finite-difference pass.
+11. Add cascades and blending.
+12. Add normals, foam, and then rendering.
+
+Do not skip from step 5 directly to the full FFT. Each of steps 6-10 should be
+validated before the next one is added.
+
+---
+
+## Key pitfalls
+
+- **Do not use a per-texel Jacobian mask to correct displacement.** The scale
+  gradient creates new folds and spikes. Use global `lambda` for geometry and
+  `J` for foam.
+- **Do not finite-difference the FFT displacement for the Jacobian.** Compute
+  derivative spectra in frequency space and IFFT them.
+- **Normalization differs between frequency bands and wavenumber cells.** Check
+  `delta_f` vs `delta_k`, `domega/dk`, and the `sqrt(...)` term.
+- **Hermitian symmetry and inverse-FFT signs are easy to get wrong.** Validate
+  with a known sine wave.
+- **Coordinate conventions drift easily.** Keep X/Y horizontal and Z height
+  everywhere; adapt the reference, do not mix bases.
+- **Storage images need `GENERAL`.** Only transition to
+  `SHADER_READ_ONLY_OPTIMAL` after the compute pass is finished.
+- **Cascade seams and LOD popping** usually come from missing cutoffs or
+  incorrect cross-fade ranges, not from the FFT itself.
+- **FP16 displacement** can lose precision in the Jacobian; validate before
+  committing to it.
+
+---
+
+## Archived: previous src/action_plan
+
+1. Create a rudimentary PBR shader.
 2. Create a simple material builder and material struct.
-    These are simply values just for the PBR. Anything using a custom 
-    fragment shader doesn't use this system.
-3. Update the graphics_pipeline_builder to have an option to use a pbr shader
-    and pass it the info. 
+   These are simply values just for the PBR. Anything using a custom
+   fragment shader doesn't use this system.
+3. Update the graphics_pipeline_builder to have an option to use a PBR shader
+   and pass it the info.
+

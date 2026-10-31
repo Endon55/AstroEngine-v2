@@ -654,7 +654,6 @@ validate_input_outputs :: proc(stage_params:^[dynamic]Stage_Params) ->(ok:bool,)
         return true
     }
 
-     
     //Inputs are the driving force. An output doesn't matter if there isn't an input to use it, and inputs get pruned by the compiler if they don't get used. This ordering prevents getting errors when for example the fragment shader doesn't use the uv's and they get removed, despite being defined in the spirv.
     //TODO add a better check to this. It would be nice to drop a warning that "uv's arent used in .FRAGMENT"
     for i in 0..<count -1 {
@@ -682,7 +681,7 @@ validate_input_outputs :: proc(stage_params:^[dynamic]Stage_Params) ->(ok:bool,)
                         }
                         // log.errorf("Stage: %v, Output:%v, Location: %v, Format: %v", current.stage, output.name, output.location, output.format)
                         // log.errorf("Stage: %v, Input:%v, Location: %v, Format: %v", next.stage, input.name, input.location, input.format)
-                        log.errorf("They Share a location but the format is different")
+                        log.errorf("They Share a location(%v) but the format is different, Output(%v), Input(%v)", output.location, output.format, input.format)
                         return false
                     }
                     else {
