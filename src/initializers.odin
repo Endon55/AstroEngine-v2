@@ -174,6 +174,7 @@ image_create_info :: proc(
 	format: vk.Format,
 	usageFlags: vk.ImageUsageFlags,
 	extent: vk.Extent3D,
+    layers:u32= 1,
 ) -> vk.ImageCreateInfo {
 	info := vk.ImageCreateInfo {
 		sType       = .IMAGE_CREATE_INFO,
@@ -181,7 +182,7 @@ image_create_info :: proc(
 		format      = format,
 		extent      = extent,
 		mipLevels   = 1,
-		arrayLayers = 1,
+		arrayLayers = layers,
 		samples     = {._1},
 		tiling      = .OPTIMAL,
 		usage       = usageFlags,
@@ -193,13 +194,14 @@ imageview_create_info :: proc(
 	format: vk.Format,
 	image: vk.Image,
 	aspectFlags: vk.ImageAspectFlags,
+    layers:u32 = 1,
 ) -> vk.ImageViewCreateInfo {
 	info := vk.ImageViewCreateInfo {
 		sType = .IMAGE_VIEW_CREATE_INFO,
 		viewType = .D2,
 		image = image,
 		format = format,
-		subresourceRange = {levelCount = 1, layerCount = 1, aspectMask = aspectFlags},
+		subresourceRange = {levelCount = 1, layerCount = layers, aspectMask = aspectFlags},
 	}
 	return info
 }

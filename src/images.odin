@@ -12,6 +12,7 @@ Allocated_Image :: struct {
     device: vk.Device,
     image: vk.Image,
     image_view: vk.ImageView,
+    image_view_subresource: vk.ImageSubresourceRange,
     image_extent: vk.Extent3D,
     image_format: vk.Format,
     allocator: vma.Allocator,
@@ -31,14 +32,14 @@ is_depth_format :: proc(format: vk.Format) -> bool {
 }
 
 @(require_results)
-create_image_default :: proc(self: ^Engine, size: vk.Extent3D, format: vk.Format, usage: vk.ImageUsageFlags, mipmapped := false, alloc_flags:vma.AllocationCreateInfo = {usage = .GPU_ONLY, requiredFlags={.DEVICE_LOCAL}},) -> (new_image: Allocated_Image, ok: bool,) {
+create_image_default :: proc(self: ^Engine, size: vk.Extent3D, format: vk.Format, usage: vk.ImageUsageFlags, mipmapped := false, layers: u32 = 1, alloc_flags:vma.AllocationCreateInfo = {usage = .GPU_ONLY, requiredFlags={.DEVICE_LOCAL}},) -> (new_image: Allocated_Image, ok: bool,) {
 
     new_image.allocator = self.vma_allocator
     new_image.device = self.vk_device
     new_image.image_format = format
     new_image.image_extent = size
 
-    img_info := image_create_info(format, usage, size)
+    img_info := image_create_info(format, usage, size, layers)
     if mipmapped {
         img_info.mipLevels = 
         u32(math.floor(math.log2(max(f32(size.width), f32(size.height))))) + 1
@@ -57,6 +58,7 @@ create_image_default :: proc(self: ^Engine, size: vk.Extent3D, format: vk.Format
     if vk.CreateImageView == nil {
         log.warnf("vk.CreateImageView is nil")
     }
+    new_image.image_view_subresource = view_info.subresourceRange
     vk_check(vk.CreateImageView(self.vk_device, &view_info, nil, &new_image.image_view)) or_return
 
     defer if !ok {
@@ -208,4 +210,26 @@ copy_image_to_image :: proc(cmd: vk.CommandBuffer, source: vk.Image, destination
     vk.CmdBlitImage2(cmd, &blit_info)
 
 
+}
+
+image_barrier :: proc(cmd: vk.CommandBuffer, dstAccessMask : vk.AccessFlag2 = .SHADER_READ, stage:vk.PipelineStageFlag2 = .COMPUTE_SHADER, image: Allocated_Image){
+
+        image_barrier : vk.ImageMemoryBarrier2 = {
+            sType = .IMAGE_MEMORY_BARRIER_2,
+            srcStageMask = {stage},
+            srcAccessMask = {.SHADER_WRITE},
+            dstStageMask = {stage},
+            dstAccessMask = {dstAccessMask},
+            oldLayout = .GENERAL,
+            newLayout = .GENERAL,
+            image = image.image,
+            subresourceRange =  image.image_view_subresource,       }
+
+                        dependency_info := vk.DependencyInfo{
+            sType = .DEPENDENCY_INFO,
+            imageMemoryBarrierCount = 1,
+            pImageMemoryBarriers = &image_barrier,
+        }
+
+        vk.CmdPipelineBarrier2(cmd, &dependency_info)
 }

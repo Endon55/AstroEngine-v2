@@ -1,8 +1,8 @@
 package astro
 
- import "core:strings"
- import "core:log"
-
+import "core:strings"
+import "core:log"
+import "core:math"
     /*
            Top Vertices(+z)                      Bottom Vertices(-z)
               v0______v1                             v12______v13  
@@ -163,10 +163,13 @@ generate_cross :: proc (engine: ^ Engine, meshes: ^Mesh_Asset_List, arm_width:f3
 }
 
 
-generate_plane :: proc (engine: ^Engine, meshes: ^Mesh_Asset_List, size_x, size_y: u32, density: f32,) -> (mesh_index:int, ok: bool){
-
-    x_gaps := u32(f32(size_x) * density)
-    y_gaps := u32(f32(size_y) * density)
+generate_plane :: proc (engine: ^Engine, meshes: ^Mesh_Asset_List, size_x, size_y: u32, density: f32, tile_uv_x: u32 = 1, tile_uv_y: u32 = 1) -> (mesh_index:int, ok: bool){
+    x_gaps := u32(math.round_f32(f32(size_x) * density))
+    y_gaps := u32(math.round_f32(f32(size_y) * density))
+    if x_gaps == 0 || y_gaps == 0 {
+        log.errorf("Your density and size resulted in a non existent plane x: %v, y: %v", x_gaps, y_gaps)
+        return -1, false
+    }
     //Account for the end vertice
     x_vertices := x_gaps + 1
     y_vertices := y_gaps + 1
@@ -183,9 +186,11 @@ generate_plane :: proc (engine: ^Engine, meshes: ^Mesh_Asset_List, size_x, size_
     //create vertices
     index: u32 = 0
     for y in 0..< y_vertices {
+        y_original :u32 = u32(f32(y) / density)
         for x in 0..< x_vertices {
-            uv_x := f32(x) / f32(x_gaps)
-            uv_y := f32(y) / f32(y_gaps)
+            x_original :u32 = u32(f32(x) / density)
+            uv_x := f32(x_original % tile_uv_x) / f32(x_gaps)
+            uv_y := f32(y_original % tile_uv_y) / f32(y_gaps)
             vertices[index] = {
                 position = {x_gap * f32(x), y_gap * f32(y), 0},
                 normal = {1,0,0},
