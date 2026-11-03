@@ -201,7 +201,15 @@ imageview_create_info :: proc(
 		viewType = .D2,
 		image = image,
 		format = format,
-		subresourceRange = {levelCount = 1, layerCount = layers, aspectMask = aspectFlags},
+		subresourceRange = {
+            levelCount = 1,
+            baseArrayLayer = 0,
+            layerCount = layers,
+            aspectMask = aspectFlags,
+		},
+	}
+	if layers > 1 {
+		info.viewType = .D2_ARRAY
 	}
 	return info
 }

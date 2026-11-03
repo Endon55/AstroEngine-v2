@@ -54,7 +54,7 @@ create_image_default :: proc(self: ^Engine, size: vk.Extent3D, format: vk.Format
         aspect_flag = vk.ImageAspectFlags{.DEPTH}
     }
 
-    view_info := imageview_create_info(new_image.image_format, new_image.image, aspect_flag)
+    view_info := imageview_create_info(new_image.image_format, new_image.image, aspect_flag, layers)
     if vk.CreateImageView == nil {
         log.warnf("vk.CreateImageView is nil")
     }
