@@ -174,7 +174,9 @@ generate_plane :: proc (engine: ^Engine, meshes: ^Mesh_Asset_List, size_x, size_
     x_vertices := x_gaps + 1
     y_vertices := y_gaps + 1
 
-    //x_gap :
+    u_delta := 1.0 / ((f32(size_x) / f32(tile_uv_x)) * f32(x_gaps))
+    v_delta := 1.0 / ((f32(size_y) / f32(tile_uv_y)) * f32(y_gaps))
+
     indices:= make([]u32, x_gaps * y_gaps * 6)
     vertices:= make([]Vertex, x_vertices * y_vertices)
     defer delete(indices)
@@ -186,17 +188,15 @@ generate_plane :: proc (engine: ^Engine, meshes: ^Mesh_Asset_List, size_x, size_
     //create vertices
     index: u32 = 0
     for y in 0..< y_vertices {
-        y_original :u32 = u32(f32(y) / density)
         for x in 0..< x_vertices {
-            x_original :u32 = u32(f32(x) / density)
-            uv_x := f32(x_original % tile_uv_x) / f32(x_gaps)
-            uv_y := f32(y_original % tile_uv_y) / f32(y_gaps)
+            u := u_delta * f32(x)
+            v := v_delta * f32(y)
             vertices[index] = {
                 position = {x_gap * f32(x), y_gap * f32(y), 0},
                 normal = {1,0,0},
-                uv_x = uv_x,
-                uv_y = uv_y,
-                color = {(uv_x + uv_y) / 2.0, uv_x,uv_y, 1},
+                uv_x = u,
+                uv_y = v,
+                color = {(u + v) / 2.0, u, v, 1},
             }
             index += 1
         }

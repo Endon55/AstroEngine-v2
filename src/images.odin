@@ -15,6 +15,10 @@ Allocated_Image :: struct {
     image_view_subresource: vk.ImageSubresourceRange,
     image_extent: vk.Extent3D,
     image_format: vk.Format,
+    // Stored so the pipeline builder can verify that the view it binds matches
+    // the dimensionality/array-ness/sample count the shader declared.
+    image_view_type: vk.ImageViewType,
+    image_sample_count: vk.SampleCountFlags,
     allocator: vma.Allocator,
     allocation: vma.Allocation,
      
@@ -59,6 +63,8 @@ create_image_default :: proc(self: ^Engine, size: vk.Extent3D, format: vk.Format
         log.warnf("vk.CreateImageView is nil")
     }
     new_image.image_view_subresource = view_info.subresourceRange
+    new_image.image_view_type = view_info.viewType
+    new_image.image_sample_count = img_info.samples
     vk_check(vk.CreateImageView(self.vk_device, &view_info, nil, &new_image.image_view)) or_return
 
     defer if !ok {

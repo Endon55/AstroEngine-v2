@@ -1,9 +1,11 @@
 package astro
 
 import "core:log"
+import "core:reflect"
 import "core:strings"
 import vk "vendor:vulkan"
 import "base:runtime"
+import spirv "libs:spirv-reflect"
 /*
     The basic gist of how descriptor sets and pipelines work is as follows.
     When you pass data to a shader it necessarily has a certain shape. A struct of 10 values,
@@ -271,12 +273,336 @@ pipeline_builder_resolve_binding :: proc(
     return 0, 0, false
 }
 
+// ---------------------------------------------------------------------------
+// Binding validation
+// ---------------------------------------------------------------------------
+// These checks compare the value the host is about to bind against the type
+// SPIRV-Reflect extracted from the shader that will consume it. A mismatch here
+// is almost always a CPU struct that drifted out of sync with a shader header,
+// or an image whose view type doesn't match the shader declaration. Both used to
+// manifest as an out-of-bounds descriptor access and a GPU hang, so report the
+// exact offending value by name and refuse to build the pipeline.
+
+@(private = "file")
+pipeline_builder_type_name :: proc(T: typeid) -> string {
+    ti := type_info_of(T)
+    if ti != nil {
+        if named, ok := ti.variant.(runtime.Type_Info_Named); ok {
+            return named.name
+        }
+    }
+    return "<unnamed>"
+}
+
+@(private = "file")
+pipeline_builder_cstring :: proc(value: cstring) -> string {
+    return value != nil ? string(value) : "<unnamed>"
+}
+
+@(private = "file")
+pipeline_builder_shader_struct_name :: proc(reflection: Resource_Reflection) -> string {
+    if reflection.type_description != nil {
+        if name := pipeline_builder_cstring(reflection.type_description.type_name); name != "<unnamed>" {
+            return name
+        }
+    }
+    if reflection.block != nil && reflection.block.name != nil {
+        return string(reflection.block.name)
+    }
+    return "<unnamed>"
+}
+
+@(private = "file")
+pipeline_builder_is_buffer_descriptor :: proc(type: vk.DescriptorType) -> bool {
+    #partial switch type {
+    case .UNIFORM_BUFFER, .UNIFORM_BUFFER_DYNAMIC, .STORAGE_BUFFER, .STORAGE_BUFFER_DYNAMIC, .INLINE_UNIFORM_BLOCK:
+        return true
+    }
+    return false
+}
+
+@(private = "file")
+pipeline_builder_is_image_descriptor :: proc(type: vk.DescriptorType) -> bool {
+    #partial switch type {
+    case .SAMPLED_IMAGE, .STORAGE_IMAGE, .COMBINED_IMAGE_SAMPLER, .INPUT_ATTACHMENT:
+        return true
+    }
+    return false
+}
+
+// Validates the CPU struct `T` against the block layout the shader declared for
+// `name`. Checks field count, per-field offset and per-field size. Names are not
+// required to match (shaders commonly use camelCase while host structs use
+// snake_case), but offsets/sizes catch the dangerous drifts.
+@(private = "file")
+pipeline_builder_validate_uniform :: proc(
+    self: ^Pipeline_Builder_Base,
+    name: string,
+    $T: typeid,
+    loc: runtime.Source_Code_Location,
+) {
+    reflections, found := self.reflect_layout.binding_reflections[name]
+    if !found do return
+
+    cpu_name := pipeline_builder_type_name(T)
+    cpu_fields := reflect.struct_fields_zipped(T)
+    cpu_size := size_of(T)
+    cpu_is_struct := reflect.underlying_type_kind(T) == .Struct
+
+    for reflection in reflections {
+        if !pipeline_builder_is_buffer_descriptor(reflection.descriptor_type) {
+            log.errorf(
+                "The struct passed for uniform '%v' is the problem: pipeline_builder_bind_uniform_ptr was called with CPU struct '%v', but shader '%v' (%v) declares set %v binding %v as %v, not a buffer.",
+                name, cpu_name, reflection.shader_name, reflection.stage,
+                reflection.set, reflection.binding, reflection.descriptor_type,
+                location = loc,
+            )
+            self.failed = true
+            continue
+        }
+
+        block := reflection.block
+        if block == nil || block.member_count == 0 {
+            // A buffer whose declaration has no named members (for example a
+            // scalar or array block) can only be checked by size.
+            if cpu_size < int(block != nil ? block.size : 0) {
+                log.errorf(
+                    "The struct passed for uniform '%v' is the problem: shader '%v' (%v) set %v binding %v needs %v byte(s), but CPU struct '%v' is only %v byte(s).",
+                    name, reflection.shader_name, reflection.stage,
+                    reflection.set, reflection.binding, block != nil ? block.size : 0,
+                    cpu_name, cpu_size,
+                    location = loc,
+                )
+                self.failed = true
+            }
+            continue
+        }
+
+        members := ([^]spirv.SpvReflectBlockVariable)(block.members)[:int(block.member_count)]
+        shader_struct_name := pipeline_builder_shader_struct_name(reflection)
+
+        if !cpu_is_struct {
+            // A scalar/array uniform has no CPU fields to compare; the size check
+            // at the bottom of the loop is the meaningful validation for it.
+            used_size := u32(0)
+            if len(members) > 0 {
+                last := members[len(members) - 1]
+                used_size = last.offset + last.size
+            }
+            if cpu_size < int(used_size) || cpu_size > int(block.padded_size) {
+                log.errorf(
+                    "The value passed for uniform '%v' is the problem: CPU type '%v' is %v byte(s), but shader struct '%v' needs %v byte(s) of members (padded block size %v).",
+                    name, cpu_name, cpu_size, shader_struct_name, used_size, block.padded_size,
+                    location = loc,
+                )
+                self.failed = true
+            }
+            continue
+        }
+
+        // A shader may legally prune unused trailing block members, so a CPU
+        // struct with *more* fields is only a problem if it shifts something
+        // (caught by the offset checks below) or grows past the declared block
+        // (caught by the size check below). A shader with more fields than the
+        // CPU struct is always a real mismatch though.
+        if len(cpu_fields) < len(members) {
+            log.errorf(
+                "The struct passed for uniform '%v' is the problem: shader '%v' (%v) struct '%v' (set %v binding %v) has %v field(s), but CPU struct '%v' only has %v field(s).",
+                name, reflection.shader_name, reflection.stage,
+                shader_struct_name, reflection.set, reflection.binding,
+                len(members), cpu_name, len(cpu_fields),
+                location = loc,
+            )
+            self.failed = true
+        }
+
+        for i in 0..<min(len(cpu_fields), len(members)) {
+            field := reflect.struct_field_at(T, i)
+            member := members[i]
+            field_size := reflect.size_of_typeid(field.type.id)
+            member_name := pipeline_builder_cstring(member.name)
+
+            if field.offset != uintptr(member.offset) {
+                log.errorf(
+                    "The struct passed for uniform '%v' is the problem: field %v '%v' is at CPU offset %v, but shader struct '%v' member '%v' is at offset %v.",
+                    name, i, field.name, field.offset,
+                    shader_struct_name, member_name, member.offset,
+                    location = loc,
+                )
+                self.failed = true
+            }
+            if field_size != int(member.size) {
+                log.errorf(
+                    "The struct passed for uniform '%v' is the problem: field %v '%v' is %v byte(s) on the CPU, but shader struct '%v' member '%v' is %v byte(s).",
+                    name, i, field.name, field_size,
+                    shader_struct_name, member_name, member.size,
+                    location = loc,
+                )
+                self.failed = true
+            }
+        }
+
+        // `block.size` includes std140 tail padding, so the CPU struct is allowed
+        // to be smaller than that. It must, however, cover every member the shader
+        // declares and must not contain trailing fields the shader doesn't know.
+        used_size := u32(0)
+        if len(members) > 0 {
+            last := members[len(members) - 1]
+            used_size = last.offset + last.size
+        }
+        if cpu_size < int(used_size) || cpu_size > int(block.padded_size) {
+            log.errorf(
+                "The struct passed for uniform '%v' is the problem: CPU struct '%v' is %v byte(s), but shader struct '%v' needs %v byte(s) of members (padded block size %v).",
+                name, cpu_name, cpu_size, shader_struct_name, used_size, block.padded_size,
+                location = loc,
+            )
+            self.failed = true
+        }
+    }
+}
+
+@(private = "file")
+pipeline_builder_shader_image_view_type :: proc(image: spirv.SpvReflectImageTraits) -> (view_type: vk.ImageViewType, ok: bool) {
+    arrayed := image.arrayed != 0
+    #partial switch image.dim {
+    case ._1D:
+        return arrayed ? .D1_ARRAY : .D1, true
+    case ._2D:
+        return arrayed ? .D2_ARRAY : .D2, true
+    case ._3D:
+        return .D3, !arrayed
+    case .Cube:
+        return arrayed ? .CUBE_ARRAY : .CUBE, true
+    case:
+        return .D2, false
+    }
+}
+
+@(private = "file")
+pipeline_builder_validate_image :: proc(
+    self: ^Pipeline_Builder_Base,
+    texture: Texture_Reference,
+    name: string,
+    loc: runtime.Source_Code_Location,
+) {
+    reflections, found := self.reflect_layout.binding_reflections[name]
+    if !found do return
+
+    image := texture.image
+
+    for reflection in reflections {
+        if !pipeline_builder_is_image_descriptor(reflection.descriptor_type) {
+            log.errorf(
+                "The image bound for shader resource '%v' is the problem: pipeline_builder_bind_image was called, but shader '%v' (%v) declares set %v binding %v as %v, not an image.",
+                name, reflection.shader_name, reflection.stage,
+                reflection.set, reflection.binding, reflection.descriptor_type,
+                location = loc,
+            )
+            self.failed = true
+            continue
+        }
+        if reflection.descriptor_type == .COMBINED_IMAGE_SAMPLER {
+            log.errorf(
+                "The image bound for shader resource '%v' is the problem: shader '%v' (%v) declares a combined image sampler, but pipeline_builder_bind_image only supplies an image view. Bind a sampler for this resource.",
+                name, reflection.shader_name, reflection.stage,
+                location = loc,
+            )
+            self.failed = true
+            continue
+        }
+
+        // Check the view's dimensionality/array-ness, sample count, and (when
+        // the shader actually declares one) the storage image format.
+        expected_view, view_ok := pipeline_builder_shader_image_view_type(reflection.image)
+        if view_ok && image.image_view_type != expected_view {
+            log.errorf(
+                "The image bound for shader resource '%v' is the problem: shader '%v' (%v) expects a %v view (dim %v, arrayed %v), but the supplied image is a %v view (%v, %vx%vx%v).",
+                name, reflection.shader_name, reflection.stage,
+                expected_view, reflection.image.dim, reflection.image.arrayed != 0,
+                image.image_view_type, image.image_format,
+                image.image_extent.width, image.image_extent.height, image.image_extent.depth,
+                location = loc,
+            )
+            self.failed = true
+        }
+
+        shader_multisampled := reflection.image.ms != 0
+        image_multisampled := image.image_sample_count != {._1}
+        if shader_multisampled != image_multisampled {
+            log.errorf(
+                "The image bound for shader resource '%v' is the problem: shader '%v' (%v) expects a %v image, but the supplied image uses %v samples.",
+                name, reflection.shader_name, reflection.stage,
+                shader_multisampled ? "multisampled" : "single-sampled",
+                image.image_sample_count,
+                location = loc,
+            )
+            self.failed = true
+        }
+
+        // `image_format` is Unknown (0) for most sampled/storage declarations, so
+        // only compare it when the shader explicitly requested a format.
+        if reflection.image.image_format != .Unknown {
+            expected_format := pipeline_builder_spv_image_format(reflection.image.image_format)
+            if expected_format != .UNDEFINED && expected_format != image.image_format {
+                log.errorf(
+                    "The image bound for shader resource '%v' is the problem: shader '%v' (%v) declares image format %v, but the supplied image is %v.",
+                    name, reflection.shader_name, reflection.stage,
+                    expected_format, image.image_format,
+                    location = loc,
+                )
+                self.failed = true
+            }
+        }
+    }
+}
+
+// Maps the format qualifier SPIR-V uses for storage images to the matching
+// Vulkan format. Only the formats this engine's shaders can request are needed.
+@(private = "file")
+pipeline_builder_spv_image_format :: proc(format: spirv.SpvImageFormat) -> vk.Format {
+    #partial switch format {
+    case .Rgba32f: return .R32G32B32A32_SFLOAT
+    case .Rgba16f: return .R16G16B16A16_SFLOAT
+    case .R32f:    return .R32_SFLOAT
+    case .Rgba8:   return .R8G8B8A8_UNORM
+    case .Rg32f:   return .R32G32_SFLOAT
+    case .Rg16f:   return .R16G16_SFLOAT
+    case .R16f:    return .R16_SFLOAT
+    case .Rgba16:  return .R16G16B16A16_UNORM
+    case .Rg16:    return .R16G16_UNORM
+    case .Rg8:     return .R8G8_UNORM
+    case .R16:     return .R16_UNORM
+    case .R8:      return .R8_UNORM
+    case .Rgba32i: return .R32G32B32A32_SINT
+    case .Rgba16i: return .R16G16B16A16_SINT
+    case .Rgba8i:  return .R8G8B8A8_SINT
+    case .R32i:    return .R32_SINT
+    case .Rg32i:   return .R32G32_SINT
+    case .Rg16i:   return .R16G16_SINT
+    case .Rg8i:    return .R8G8_SINT
+    case .R16i:    return .R16_SINT
+    case .R8i:     return .R8_SINT
+    case .Rgba32ui: return .R32G32B32A32_UINT
+    case .Rgba16ui: return .R16G16B16A16_UINT
+    case .Rgba8ui:  return .R8G8B8A8_UINT
+    case .R32ui:    return .R32_UINT
+    case .Rg32ui:   return .R32G32_UINT
+    case .Rg16ui:   return .R16G16_UINT
+    case .Rg8ui:    return .R8G8_UINT
+    case .R16ui:    return .R16_UINT
+    case .R8ui:     return .R8_UINT
+    case:           return .UNDEFINED
+    }
+}
+
 /*
     Uniforms are for relatively small amounts of data taht you want to change regularly.
 */
 pipeline_builder_bind_uniform_ptr :: proc(self: ^Pipeline_Builder_Base, data: ^^$T, name: string, loc := #caller_location) {
     set, binding, found := pipeline_builder_resolve_binding(self, name, loc)
     if !found do return
+
+    pipeline_builder_validate_uniform(self, name, T, loc)
 
     uniform_binding: Uniform_Binding
     uniform_binding.set = set
@@ -294,6 +620,8 @@ pipeline_builder_bind_uniform_ptr :: proc(self: ^Pipeline_Builder_Base, data: ^^
 pipeline_builder_bind_image :: proc(self: ^Pipeline_Builder_Base, texture_reference: Texture_Reference, name: string, loc := #caller_location) {
     set, binding, found := pipeline_builder_resolve_binding(self, name, loc)
     if !found do return
+
+    pipeline_builder_validate_image(self, texture_reference, name, loc)
 
     texture_binding: Texture_Binding
 

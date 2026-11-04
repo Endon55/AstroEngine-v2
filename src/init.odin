@@ -333,6 +333,8 @@ engine_init_swapchain :: proc(self: ^Engine) -> (ok: bool){
     }
 
     rview_info := imageview_create_info(self.draw_image.image_format, self.draw_image.image, {.COLOR},)
+    self.draw_image.image_view_type = rview_info.viewType
+    self.draw_image.image_sample_count = rimg_info.samples
 
     vk_check(vk.CreateImageView(self.vk_device, &rview_info, nil, &self.draw_image.image_view)) or_return
     defer if !ok {
@@ -360,6 +362,8 @@ engine_init_swapchain :: proc(self: ^Engine) -> (ok: bool){
     }
 
     dview_info := imageview_create_info(self.depth_image.image_format, self.depth_image.image, {.DEPTH},)
+    self.depth_image.image_view_type = dview_info.viewType
+    self.depth_image.image_sample_count = dimg_info.samples
 
     vk_check(vk.CreateImageView(self.vk_device, &dview_info, nil, &self.depth_image.image_view)) or_return
     defer if !ok {

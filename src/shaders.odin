@@ -311,9 +311,157 @@ shader_manager_is_out_of_date :: proc(self: ^Shader) ->(ok:bool,) {
 
         defer delete(compile_info.fullpath)
 
-        return self.modify_time != compile_info.modification_time
+        if self.modify_time != compile_info.modification_time {
+            // log.debugf(
+            //     "shader(%v) is stale: newest source/include time %v, cached SPIR-V time %v",
+            //     self.name,
+            //     self.modify_time,
+            //     compile_info.modification_time,
+            // )
+            return true
+        }
+        return false
     }
     return true
+}
+
+// ---------------------------------------------------------------------------
+// Include dependency tracking
+// ---------------------------------------------------------------------------
+// `#include`/`#import` files are not compiled as standalone shaders, so they have
+// no cache entry of their own. If a shared header changes (for example, a uniform
+// struct gains a field) every shader that includes it must be recompiled. Without
+// this the GPU would keep using cached SPIR-V with the old struct layout, which can
+// read the wrong uniform member and index a bindless descriptor array out of bounds
+// (a GPU hang, not a validation error).
+//
+// These helpers walk the include graph and return the newest modification time
+// across a shader and everything it pulls in.
+
+@(private = "file")
+shader_path_directory :: proc(path: string) -> string {
+    for i := len(path) - 1; i >= 0; i -= 1 {
+        if path[i] == '/' || path[i] == '\\' {
+            return path[:i]
+        }
+    }
+    return "."
+}
+
+// Extracts the contents of the first double-quoted string in `line`.
+@(private = "file")
+shader_extract_quoted :: proc(line: string) -> (value: string, ok: bool) {
+    open := strings.index_byte(line, '"')
+    if open < 0 {
+        return "", false
+    }
+    rest := line[open + 1:]
+    close := strings.index_byte(rest, '"')
+    if close < 0 {
+        return "", false
+    }
+    return rest[:close], true
+}
+
+// Resolves an include name the same way Slang does: relative to the including
+// file first, then against every configured shader source directory.
+@(private = "file")
+shader_resolve_include :: proc(
+    self: ^Shader_Manager,
+    including_file: string,
+    name: string,
+    allocator := context.allocator,
+) -> (resolved: string, ok: bool) {
+    if filepath.is_abs(name) {
+        if os.exists(name) {
+            return strings.clone(name, allocator), true
+        }
+        return "", false
+    }
+
+    local, local_ok := quick_concat({shader_path_directory(including_file), "/", name}, allocator)
+    if local_ok {
+        if os.exists(local) {
+            return local, true
+        }
+        delete(local)
+    }
+
+    for shader_dir in self.shader_dirs {
+        candidate, candidate_ok := quick_concat({shader_dir.source_directory, name}, allocator)
+        if !candidate_ok {
+            continue
+        }
+        if os.exists(candidate) {
+            return candidate, true
+        }
+        delete(candidate, allocator)
+    }
+    return "", false
+}
+
+@(private = "file")
+shader_source_latest_time :: proc(
+    self: ^Shader_Manager,
+    path: string,
+    visited: ^map[string]bool,
+    allocator := context.allocator,
+) -> (latest: time.Time, latest_path: string, ok: bool) {
+    latest_path = path
+    if path in visited^ {
+        return {}, latest_path, true
+    }
+    visited^[path] = true
+
+    info, stat_ok := quick_file_stat(path)
+    if !stat_ok {
+        return {}, latest_path, false
+    }
+    latest = info.modification_time
+    delete(info.fullpath)
+
+    source, read_ok := load_file_from_disc(path, allocator = allocator)
+    if !read_ok {
+        return latest, latest_path, true
+    }
+
+    remaining := string(source)
+    for {
+        line, has_line := strings.split_lines_iterator(&remaining)
+        if !has_line {
+            break
+        }
+
+        trimmed := strings.trim_space(line)
+        if !strings.has_prefix(trimmed, "#include") &&
+           !strings.has_prefix(trimmed, "#import") &&
+           !strings.has_prefix(trimmed, "import") {
+            continue
+        }
+
+        name, has_name := shader_extract_quoted(trimmed)
+        if !has_name {
+            continue
+        }
+
+        resolved, resolved_ok := shader_resolve_include(self, path, name, allocator)
+        defer delete(resolved)
+        if !resolved_ok {
+            log.warnf("Could not resolve shader dependency '%v' included by '%v'", name, path)
+            continue
+        }
+
+        dependency_time, dependency_path, dependency_ok := shader_source_latest_time(self, resolved, visited, allocator)
+        if !dependency_ok {
+            continue
+        }
+        if time.to_unix_nanoseconds(dependency_time) > time.to_unix_nanoseconds(latest) {
+            latest = dependency_time
+            latest_path = dependency_path
+        }
+    }
+
+    return latest, latest_path, true
 }
 
 shader_determine_stage :: proc(filename: string) -> (stage:vk.ShaderStageFlag) {
@@ -386,10 +534,33 @@ shader_manager_update_shaders :: proc(self: ^Shader_Manager, shader_dir: ^Shader
         compile_path := quick_concat({shader_dir.compiled_directory,relative_name, ".", SHADER_CACHE_VERSION, ".spv"}, context.allocator) or_return
 
 
+        // Use the newest timestamp across the shader and its include graph so that
+        // editing a shared header invalidates every dependent shader. The saved
+        // SPIR-V is given this same timestamp, which keeps the equality check in
+        // shader_manager_is_out_of_date stable across runs.
+        //
+        // All strings produced by the scan live in this per-shader arena. They must
+        // stay valid for the whole iteration (newest_dependency is used in the log
+        // below), and they must be released with the same allocator they came from.
+        // Freeing a temp-arena string with the heap allocator corrupts the heap.
+        scan_arena: mem.Dynamic_Arena
+        mem.dynamic_arena_init(&scan_arena)
+        defer mem.dynamic_arena_destroy(&scan_arena)
+        scan_allocator := mem.dynamic_arena_allocator(&scan_arena)
+
+        modify_time := info.modification_time
+        newest_dependency := info.fullpath
+        visited := make(map[string]bool)
+        if latest, latest_path, latest_ok := shader_source_latest_time(self, info.fullpath, &visited, scan_allocator); latest_ok {
+            modify_time = latest
+            newest_dependency = latest_path
+        }
+        delete(visited)
+
         shader: Shader = {
             name = relative_name,
             source_path = info.fullpath,
-            modify_time = info.modification_time,
+            modify_time = modify_time,
             compiled_path = compile_path,
             stage = stage,
             module = bits.U64_MAX,
@@ -398,6 +569,13 @@ shader_manager_update_shaders :: proc(self: ^Shader_Manager, shader_dir: ^Shader
         
         if out_of_date
         {
+            // if newest_dependency != info.fullpath {
+            //     log.infof(
+            //         "shader(%v) is stale because included file '%v' is newer than the cached SPIR-V",
+            //         shader.name,
+            //         newest_dependency,
+            //     )
+            // }
             log.debugf("shader(%v) is out of date: recompiling", shader.name)
             compiled, ok = shader_manager_compile_shader(self, shader_dir, shader.source_path)
             if !ok {
@@ -494,9 +672,9 @@ shader_manager_compile_shader :: proc(self: ^Shader_Manager, shader_dir:^ Shader
         source_path,
         search_paths[:],
     ) or_return
-    for entry_point in compiled.entry_points {
-        log.debugf("Entry Point: %v", entry_point.name)
-    }
+    // for entry_point in compiled.entry_points {
+    //     log.debugf("Entry Point: %v", entry_point.name)
+    // }
 
     return compiled, true
 }
@@ -613,11 +791,29 @@ Binding_Location :: struct {
     binding: u32,
 }
 
+// Everything the pipeline builder needs to verify that the value it is about to
+// bind actually matches what the shader declared. The block/member pointers live
+// inside the SPIRV-Reflect module owned by `Stage_Params`, so they stay valid
+// for as long as `Reflected_Shaders` does.
+Resource_Reflection :: struct {
+    shader_name:     string,
+    stage:           vk.ShaderStageFlag,
+    set:             u32,
+    binding:         u32,
+    descriptor_type: vk.DescriptorType,
+    image:           spirv.SpvReflectImageTraits,
+    block:           ^spirv.SpvReflectBlockVariable,
+    type_description: ^spirv.SpvReflectTypeDescription,
+}
+
 Reflected_Shaders :: struct {
     layout: map[u32]map[u32]vk.DescriptorSetLayoutBinding,
     // Resource name as reported by SPIRV-Reflect -> its actual set/binding.
     // Host code binds by these names instead of hardcoding descriptor numbers.
     binding_by_name: map[string]Binding_Location,
+    // Resource name -> every declaration of it across the pipeline's stages.
+    // Used by the pipeline builder to validate uniform layouts and image types.
+    binding_reflections: map[string][dynamic]Resource_Reflection,
     push_constants: [dynamic]vk.PushConstantRange,
     stage_params: [dynamic]Stage_Params,
 }
@@ -706,8 +902,6 @@ validate_input_outputs :: proc(stage_params:^[dynamic]Stage_Params) ->(ok:bool,)
 }
 
 shaders_generate_layout_raw :: proc(reflect_layout: ^Reflected_Shaders, shader: Shader) -> (ok:bool,) {
-    log.debugf("----------------------------------------------------")
-    log.debugf("Parsing Shader: %v", shader.name)
     if reflect_layout.binding_by_name == nil {
         reflect_layout.binding_by_name = make(map[string]Binding_Location)
     }
@@ -789,6 +983,25 @@ shaders_generate_layout_raw :: proc(reflect_layout: ^Reflected_Shaders, shader: 
             } else {
                 reflect_layout.binding_by_name[name] = location
             }
+
+            // Keep the full reflection for builder-side type validation. A name can
+            // be declared by more than one stage (for example a UBO used by both the
+            // vertex and fragment shader), so collect every declaration.
+            if reflect_layout.binding_reflections == nil {
+                reflect_layout.binding_reflections = make(map[string][dynamic]Resource_Reflection)
+            }
+            reflections := reflect_layout.binding_reflections[name]
+            append(&reflections, Resource_Reflection{
+                shader_name = shader.name,
+                stage = stage,
+                set = binding.set,
+                binding = binding.binding,
+                descriptor_type = descriptor_type,
+                image = binding.image,
+                block = &binding.block,
+                type_description = binding.type_description,
+            })
+            reflect_layout.binding_reflections[name] = reflections
         }
     }
     for constant in push_constants {
@@ -842,6 +1055,7 @@ print_inputs :: proc(inputs: []^spirv.SpvReflectInterfaceVariable, count: u32, l
 shaders_generate_raw_layout_render:: proc(vk_device: vk.Device, render_shaders: Render_Shaders) -> (layout: Reflected_Shaders, ok: bool) {
 
     layout.layout = make(map[u32]map[u32]vk.DescriptorSetLayoutBinding)
+    layout.binding_reflections = make(map[string][dynamic]Resource_Reflection)
     layout.push_constants = make([dynamic]vk.PushConstantRange)
     layout.stage_params = make([dynamic]Stage_Params) 
     if render_shaders.vertex.name != "" && render_shaders.vertex.stage != .VERTEX {
@@ -890,13 +1104,16 @@ shaders_generate_raw_layout_render:: proc(vk_device: vk.Device, render_shaders: 
 
 
 delete_reflected_shaders :: proc(self:^Reflected_Shaders) {
-    log.debugf("Deleting reflected shaders")
     for key, &value in self.layout {
         
         delete(value)
     }
     delete(self.layout)
     delete(self.binding_by_name)
+    for _, &reflections in self.binding_reflections {
+        delete(reflections)
+    }
+    delete(self.binding_reflections)
 
     delete(self.push_constants)
 
@@ -918,6 +1135,7 @@ shaders_generate_raw_layout_compute :: proc(vk_device: vk.Device, compute_shader
         }
         //set:  binding: layout
         layout.layout = make(map[u32]map[u32]vk.DescriptorSetLayoutBinding)
+        layout.binding_reflections = make(map[string][dynamic]Resource_Reflection)
         layout.push_constants = make([dynamic]vk.PushConstantRange)
         layout.stage_params = make([dynamic]Stage_Params) 
 
@@ -972,7 +1190,6 @@ generate_vk_layout :: proc(vk_device: vk.Device, universal_layout: Set_Layout, l
             vk_check(vk.CreateDescriptorSetLayout(vk_device, &set_layout_info, nil, &p_layout.set_layouts[set].vk_layout)) or_return
 
             vk.GetDescriptorSetLayoutSizeEXT(vk_device, p_layout.set_layouts[set].vk_layout, &p_layout.set_layouts[set].total_set_size)
-            log.infof("Set: %v, Bindings: %v",set, len(binding_layouts))
             for i in 0..<len(binding_layouts) {
 
                 vk.GetDescriptorSetLayoutBindingOffsetEXT(vk_device, p_layout.set_layouts[set].vk_layout, u32(i), &p_layout.set_layouts[set].binding_layouts[i].offset)

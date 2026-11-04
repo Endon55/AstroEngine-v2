@@ -17,9 +17,9 @@ create_engine_samplers :: proc(self: ^Engine_Samplers) ->(ok:bool,) {
         magFilter = .LINEAR,
         minFilter = .LINEAR,
         mipmapMode = .LINEAR,
-        addressModeU = .CLAMP_TO_EDGE,
-        addressModeV = .CLAMP_TO_EDGE,
-        addressModeW = .CLAMP_TO_EDGE,
+        addressModeU = .REPEAT,
+        addressModeV = .REPEAT,
+        addressModeW = .REPEAT,
         maxLod = vk.LOD_CLAMP_NONE,
     }
 
