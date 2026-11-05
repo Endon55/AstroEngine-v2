@@ -174,8 +174,8 @@ generate_plane :: proc (engine: ^Engine, meshes: ^Mesh_Asset_List, size_x, size_
     x_vertices := x_gaps + 1
     y_vertices := y_gaps + 1
 
-    u_delta := 1.0 / ((f32(size_x) / f32(tile_uv_x)) * f32(x_gaps))
-    v_delta := 1.0 / ((f32(size_y) / f32(tile_uv_y)) * f32(y_gaps))
+    u_delta := ((f32(size_x) / f32(tile_uv_x)) / f32(x_gaps))
+    v_delta := ((f32(size_y) / f32(tile_uv_y)) / f32(y_gaps))
 
     indices:= make([]u32, x_gaps * y_gaps * 6)
     vertices:= make([]Vertex, x_vertices * y_vertices)
