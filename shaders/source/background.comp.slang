@@ -6,7 +6,8 @@ struct PushConstants
     float4 data4;
 };
 
-RWTexture2D<float4> image;
+[[vk_binding(0,1)]]
+RWTexture2D<float4> background;
 
 [[vk_push_constant]]
 PushConstants push_constants;
@@ -54,7 +55,7 @@ float StableStarField(in float2 vSamplePos, float fThreshhold)
 void mainImage(out float4 fragColor, in float2 fragCoord)
 {
     float2 iResolution;
-    image.GetDimensions(iResolution.x, iResolution.y);
+    background.GetDimensions(iResolution.x, iResolution.y);
 
     // Sky Background Color
     // float3 vColor = vec3( 0.1, 0.2, 0.4 ) * fragCoord.y / iResolution.y;
@@ -84,13 +85,13 @@ void main(uint3 dispatchThreadID: SV_DispatchThreadID)
     let texelCoord = uint2(dispatchThreadID.xy);
 
     uint2 size;
-    image.GetDimensions(size.x, size.y);
+    background.GetDimensions(size.x, size.y);
 
     if (texelCoord.x < size.x && texelCoord.y < size.y)
     {
         float4 color;
         mainImage(color, texelCoord);
 
-        image[texelCoord] = color;
+        background[texelCoord] = color;
     }
 }

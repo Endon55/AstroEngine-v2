@@ -37,9 +37,8 @@ Shader_Pipeline :: struct {
     resources: [dynamic]Shader_Resource,
     binding_parameters: Binding_Parameters,
     set_arena_references: []Arena_Reference,
-    // Pipelines built from one multi-entry-point module share a layout and descriptor
-    // set. Exactly one Shader_Pipeline in the group owns those, so destroying every
-    // member doesn't double-free them.
+    push_constants: Push_Constants_Binding,
+    //Ensures no double frees
     owns_layout: bool,
     owns_resources: bool,
 }
@@ -49,6 +48,14 @@ Binding_Parameters :: struct {
     set_buffer_indices: []u32,
     set_buffer_frame_offsets: []vk.DeviceSize,
 }
+
+Push_Constants_Binding :: struct {
+    data_ptr: rawptr,
+    type: typeid,
+    offset: u32,
+    stages: vk.ShaderStageFlags,
+}
+
 Binding :: struct {
     binding: u32,
     set: u32,
@@ -86,35 +93,17 @@ shader_pipeline_bind :: proc(self: ^Shader_Pipeline, cmd: vk.CommandBuffer, engi
 
     //3. Set for each set I need to specify where the descriptor lives (buffer index from Step 2, offset into that buffer)
     vk.CmdSetDescriptorBufferOffsetsEXT(cmd, self.bind_point, self.pipeline_layout.vk_layout, 0, self.pipeline_layout.sets, raw_data(self.binding_parameters.set_buffer_indices), raw_data(self.binding_parameters.set_buffer_frame_offsets))
-    //4. Dispatch
-    //vk.CmdDispatch(cmd, 64, 64, 1)
 
-    //
-    // for uniform in self.uniform_bindings {
-    //
-    //    //bind each uniform with its descriptor offset 
-    // }
-    //
-    //
-    // vk.CmdBindDescriptorBuffersEXT(
-    //     cmd,
-    //     .COMPUTE,
-    //     self.pipeline_layout,
-    //     0,
-    //     1,
-    //     self.pipeline_,
-    //     0,
-    //     nil,
-    // )
-    // vk.CmdPushConstants(
-    //     cmd,
-    //     ocean_sim.jonswap_layout.handle,
-    //     {.COMPUTE},
-    //     0,
-    //     size_of(Spectrum_Parameters),
-    //     &ocean_sim.spectrum_params,
-    // )
 
+    if self.push_constants.data_ptr != nil {
+        
+        vk.CmdPushConstants(cmd, self.pipeline_layout.vk_layout, self.push_constants.stages, self.push_constants.offset, size_of(self.push_constants.type), self.push_constants.data_ptr)
+    }
+}
+
+shader_pipeline_bind_push_constants :: proc(self: ^Shader_Pipeline, cmd:vk.CommandBuffer, engine:^Engine, push_constants: ^$T, stage_flags: vk.ShaderStageFlags) {
+
+    vk.CmdPushConstants(cmd, self.pipeline_layout.vk_layout, stage_flags, 0, size_of(T), push_constants)
 }
 
 
@@ -173,6 +162,7 @@ Pipeline_Builder_Base :: struct {
     reflect_layout: Reflected_Shaders,
     shader_pipeline: Shader_Pipeline,
     memory_manager: ^Memory_Manager,
+    push_constants: Push_Constants_Binding,
     failed: bool,
 }
 
@@ -595,10 +585,39 @@ pipeline_builder_spv_image_format :: proc(format: spirv.SpvImageFormat) -> vk.Fo
     }
 }
 
+pipeline_builder_bind_push_constants :: proc(self: ^Pipeline_Builder_Base, push_constants: ^$T, stage_flags: vk.ShaderStageFlags, offset: u32 = 0) {
+    
+    assert(push_constants != nil, "Invalid push constants pointer")
+    self.push_constants = {
+        data_ptr = rawptr(push_constants),
+        type = T,
+        offset = offset,
+        stages = stage_flags,
+    }
+}
+
+
 /*
     Uniforms are for relatively small amounts of data taht you want to change regularly.
 */
-pipeline_builder_bind_uniform_ptr :: proc(self: ^Pipeline_Builder_Base, data: ^^$T, name: string, loc := #caller_location) {
+pipeline_builder_bind_uniform_ptr :: proc(self: ^Pipeline_Builder_Base, data: ^^$T, name: string, loc := #caller_location) -> (mem_ref: Memory_Reference) {
+    set, binding, found := pipeline_builder_resolve_binding(self, name, loc)
+    if !found do return mem_ref
+
+    pipeline_builder_validate_uniform(self, name, T, loc)
+
+    uniform_binding: Uniform_Binding
+    uniform_binding.set = set
+    uniform_binding.binding = binding
+    uniform_binding.mem_reference = memory_manager_bind_uniform(self.memory_manager, size_of(T))
+
+    assert(uniform_binding.mem_reference.cpu_pointer != nil, "Got a bad pointer for the uniform")
+    append(&self.shader_pipeline.resources, uniform_binding)
+
+    data^ = cast(^T)uniform_binding.mem_reference.cpu_pointer
+    return uniform_binding.mem_reference
+}
+pipeline_builder_bind_existing_uniform_ptr :: proc(self: ^Pipeline_Builder_Base, data: ^^$T, mem_reference: Memory_Reference, name: string, loc := #caller_location) {
     set, binding, found := pipeline_builder_resolve_binding(self, name, loc)
     if !found do return
 
@@ -607,7 +626,7 @@ pipeline_builder_bind_uniform_ptr :: proc(self: ^Pipeline_Builder_Base, data: ^^
     uniform_binding: Uniform_Binding
     uniform_binding.set = set
     uniform_binding.binding = binding
-    uniform_binding.mem_reference = memory_manager_bind_uniform(self.memory_manager, size_of(T))
+    uniform_binding.mem_reference = mem_reference
 
     assert(uniform_binding.mem_reference.cpu_pointer != nil, "Got a bad pointer for the uniform")
     append(&self.shader_pipeline.resources, uniform_binding)
@@ -859,11 +878,12 @@ compute_pipeline_builder_build_all :: proc(self: ^Compute_Pipeline_Builder, engi
     module := shader_get_module(self.vk_device, engine, &self.shaders.compute) or_return
     pipelines = make(map[string]Shader_Pipeline)
     for entry_point in selected {
+        
         pipeline := owner
         // The group owner below frees the shared layout and descriptor memory.
         pipeline.owns_layout = false
         pipeline.owns_resources = false
-
+        pipeline.push_constants = self.push_constants
         entry_point_c := strings.clone_to_cstring(entry_point, context.temp_allocator)
         pipeline_create_info := vk.ComputePipelineCreateInfo {
             sType = .COMPUTE_PIPELINE_CREATE_INFO,
@@ -1002,6 +1022,8 @@ graphics_pipeline_builder_build :: proc(self: ^Graphics_Pipeline_Builder, engine
     }
 
     vk_check(vk.CreateGraphicsPipelines(self.vk_device, 0, 1, &pipeline_create_info, nil, &pipeline.pipeline), "Failed to create graphics pipeline") or_return
+
+    pipeline.push_constants = self.push_constants
 
     pipeline_finalize(self, engine, &pipeline) or_return
     return pipeline, true

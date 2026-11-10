@@ -25,13 +25,10 @@ Allocated_Image :: struct {
 }
 
 is_depth_format :: proc(format: vk.Format) -> bool {
-
-
     #partial switch format{
         case .D16_UNORM, .D32_SFLOAT, .D32_SFLOAT_S8_UINT, .D24_UNORM_S8_UINT:
             return true
     } 
-
     return false
 }
 

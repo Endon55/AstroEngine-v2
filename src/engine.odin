@@ -73,7 +73,7 @@ Engine::struct {
     master_layout: vk.PipelineLayout,
 
     background_layout: Pipeline_Layout,
-    background_effects: [Compute_Effect_Kind]Compute_Effect,
+    background_effect: Compute_Effect,
     current_background_effect: Compute_Effect_Kind,
     global_descriptor_allocator: Descriptor_Allocator,
     draw_image_descriptors: vk.DescriptorSet,
@@ -161,8 +161,7 @@ Compute_Effect_Kind :: enum {
 
 Compute_Effect :: struct {
     name:     cstring,
-    pipeline: vk.Pipeline,
-    layout:   vk.PipelineLayout,
+    pipeline: Shader_Pipeline,
     data:     Compute_Push_Constants,
 }
 

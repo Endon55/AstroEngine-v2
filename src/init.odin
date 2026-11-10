@@ -173,6 +173,7 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
             sType = .PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
             descriptorBuffer = true,
             descriptorBufferPushDescriptors = true,
+            
         },
         device_features = {
             fillModeNonSolid = true,
@@ -190,6 +191,7 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
             vulkanMemoryModelAvailabilityVisibilityChains = false,
             descriptorBindingPartiallyBound = true,
             shaderSampledImageArrayNonUniformIndexing = true,
+            uniformBufferStandardLayout = true,
         },
         device_features_13 = {
             sType =.PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
@@ -208,6 +210,7 @@ engine_init_vulkan :: proc(self: ^Engine) -> (ok: bool){
         vk.EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME,
         vk.EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
         vk.EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME,
+        vk.KHR_UNIFORM_BUFFER_STANDARD_LAYOUT_EXTENSION_NAME,
         )
     log.debugf("---Creating Instance")
     create_vk_instance(&self.vk_context, features, self) or_return
@@ -320,35 +323,8 @@ engine_init_swapchain :: proc(self: ^Engine) -> (ok: bool){
         .STORAGE,
         .COLOR_ATTACHMENT,
     }
-    
-    rimg_info := image_create_info(self.draw_image.image_format, draw_image_usages, draw_image_extent,)
-    
-    rimg_allocinfo := vma.AllocationCreateInfo {
-        usage = .GPU_ONLY,
-        requiredFlags = {.DEVICE_LOCAL,},
-    }
-    vk_check(vma.CreateImage(self.vma_allocator, rimg_info, rimg_allocinfo, &self.draw_image.image, &self.draw_image.allocation, nil)) or_return
-    defer if !ok {
-        vma.DestroyImage(self.vma_allocator, self.draw_image.image, nil)
-    }
 
-    rview_info := imageview_create_info(self.draw_image.image_format, self.draw_image.image, {.COLOR},)
-    self.draw_image.image_view_type = rview_info.viewType
-    self.draw_image.image_sample_count = rimg_info.samples
-
-    vk_check(vk.CreateImageView(self.vk_device, &rview_info, nil, &self.draw_image.image_view)) or_return
-    defer if !ok {
-        vk.DestroyImageView(self.vk_device, self.draw_image.image_view, nil)
-    }
-
-    deletion_queue_push(&self.main_deletion_queue, self.draw_image)
-
-
-    //DEPTH IMAGE
-    self.depth_image.image_format = .D32_SFLOAT
-    self.depth_image.image_extent = draw_image_extent
-    self.depth_image.allocator = self.vma_allocator
-    self.depth_image.device = self.vk_device
+    self.draw_image = create_image_default(self, draw_image_extent, .R16G16B16A16_SFLOAT, draw_image_usages) or_return
 
     depth_image_usages := vk.ImageUsageFlags {
         .DEPTH_STENCIL_ATTACHMENT,
@@ -356,21 +332,7 @@ engine_init_swapchain :: proc(self: ^Engine) -> (ok: bool){
     
     dimg_info := image_create_info(self.depth_image.image_format, depth_image_usages, draw_image_extent,)
     
-    vk_check(vma.CreateImage(self.vma_allocator, dimg_info, rimg_allocinfo, &self.depth_image.image, &self.depth_image.allocation, nil)) or_return
-    defer if !ok {
-        vma.DestroyImage(self.vma_allocator, self.depth_image.image, nil)
-    }
-
-    dview_info := imageview_create_info(self.depth_image.image_format, self.depth_image.image, {.DEPTH},)
-    self.depth_image.image_view_type = dview_info.viewType
-    self.depth_image.image_sample_count = dimg_info.samples
-
-    vk_check(vk.CreateImageView(self.vk_device, &dview_info, nil, &self.depth_image.image_view)) or_return
-    defer if !ok {
-        vk.DestroyImageView(self.vk_device, self.depth_image.image_view, nil)
-    }
-
-    deletion_queue_push(&self.main_deletion_queue, self.depth_image)
+    self.depth_image = create_image_default(self, draw_image_extent, .D32_SFLOAT, depth_image_usages) or_return
 
     return true
 }
@@ -464,41 +426,23 @@ engine_init_descriptors:: proc(self: ^Engine) -> (ok:bool) {
 
 engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
 
-    pipeline_layout_init(&self.background_layout, self.vk_device, "Background")
-    pipeline_layout_add_binding(&self.background_layout, 0, 0, .STORAGE_IMAGE, {.COMPUTE})
-    pipeline_layout_add_push_constant(&self.background_layout, Compute_Push_Constants, {.COMPUTE})
-    pipeline_layout_build(&self.background_layout) or_return
-    deletion_queue_push(&self.main_deletion_queue, self.background_layout)
-
-    self.draw_image_descriptors = descriptor_allocator_allocate(
-        &self.global_descriptor_allocator,
-        pipeline_layout_set(&self.background_layout, 0),
-    ) or_return
-
-    writer: Descriptor_Writer
-    descriptor_writer_init(&writer, self.vk_device, pipeline_layout_set(&self.background_layout, 0))
-    descriptor_writer_write_image(&writer, 0, self.draw_image.image_view) or_return
-    descriptor_writer_update_set(&writer, self.draw_image_descriptors)
-
-    gradient_color := Compute_Effect {
-        layout = self.background_layout.handle,
-        name = "Gradient Color",
-        data = {data1 = {1, 0, 0, 1}, data2 = {0, 0, 1, 1}}
+    sky, has_sky := shader_manager_get_shader(&self.shader_manager, "engine/background.comp")
+    if !has_sky {
+        return false
     }
-    gradient_color.pipeline = engine_create_compute_pipeline(self, "engine/gradient_color.comp") or_return
-    defer if !ok { vk.DestroyPipeline(self.vk_device, gradient_color.pipeline, nil) }
 
-    sky := Compute_Effect {
-        layout = self.background_layout.handle,
+    self.background_effect = Compute_Effect {
         name = "Sky",
         data = {data1 = {0.1, 0.2, 0.4, 0.97}},
     }
-    sky.pipeline = engine_create_compute_pipeline(self, "engine/sky.comp") or_return
+    builder: Compute_Pipeline_Builder
+    compute_pipeline_builder_init(&builder, &self.memory_manager, self.vk_device)
+    compute_pipeline_builder_set_shader(&builder, sky)
+    alloc_info := memory_manager_register_texture(self.draw_image) or_return
+    pipeline_builder_bind_image(&builder, alloc_info, "background")
+    pipeline_builder_bind_push_constants(&builder, &self.background_effect.data, {.COMPUTE})
+    self.background_effect.pipeline = compute_pipeline_builder_build(&builder, self) or_return
 
-    self.background_effects[.Gradient] = gradient_color
-    self.background_effects[.Sky] = sky
-
-    self.current_background_effect = DEFAULT_BACKGROUND    
 
     return true
 }
@@ -510,10 +454,7 @@ engine_create_compute_pipeline :: proc(self: ^Engine, shader_name: string, loc :
 }
 
 engine_build_pipelines :: proc(self: ^Engine) -> (ok: bool) {
-    gradient_pipeline := engine_create_compute_pipeline(self, "engine/gradient_color.comp") or_return
-    defer if !ok { vk.DestroyPipeline(self.vk_device, gradient_pipeline, nil) }
-    sky_pipeline := engine_create_compute_pipeline(self, "engine/sky.comp") or_return
-    defer if !ok { vk.DestroyPipeline(self.vk_device, sky_pipeline, nil) }
+
     vertex, has_vertex := shader_manager_get_shader(&self.shader_manager, "engine/mesh.vert")
     fragment, has_fragment := shader_manager_get_shader(&self.shader_manager, "engine/mesh.frag")
     if !has_vertex || !has_fragment {
@@ -532,22 +473,16 @@ engine_build_pipelines :: proc(self: ^Engine) -> (ok: bool) {
 
     vk_check(vk.DeviceWaitIdle(self.vk_device)) or_return
 
-    old_gradient := self.background_effects[.Gradient].pipeline
-    old_sky := self.background_effects[.Sky].pipeline
+    old_background := self.background_effect.pipeline
     old_opaque := self.metal_rough_material.shader.opaque_pipeline.pipeline
     old_transparent := self.metal_rough_material.shader.transparent_pipeline.pipeline
 
-    self.background_effects[.Gradient].pipeline = gradient_pipeline
-    self.background_effects[.Sky].pipeline = sky_pipeline
     self.metal_rough_material.shader.opaque_pipeline = material_pipelines.opaque
     self.metal_rough_material.shader.transparent_pipeline = material_pipelines.transparent
 
-    vk.DestroyPipeline(self.vk_device, old_gradient, nil)
-    vk.DestroyPipeline(self.vk_device, old_sky, nil)
-    vk.DestroyPipeline(self.vk_device, old_opaque, nil)
-    vk.DestroyPipeline(self.vk_device, old_transparent, nil)
     return true
 }
+
 
 engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) { 
 
@@ -556,7 +491,6 @@ engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) {
     log.debugf("---Metalic Pipelines")
     metallic_roughness_build_pipeline(&self.metal_rough_material, self) or_return
     log.debugf("---Ocean Material")
-    // ocean_build_pipeline(&self.scene.ocean, self) or_return
 
 
     return true
@@ -732,10 +666,6 @@ engine_cleanup :: proc(self: ^Engine) {
         return
     }
     ensure(vk.DeviceWaitIdle(self.vk_device) == .SUCCESS)
-
-    for effect in self.background_effects {
-        vk.DestroyPipeline(self.vk_device, effect.pipeline, nil)
-    }
     metallic_roughness_clear_resources(self.metal_rough_material)
 
     shader_manager_deinit(&self.shader_manager)

@@ -114,17 +114,16 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
 
 @(require_results)
 engine_draw_background :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool) {
-    effect := &self.background_effects[self.current_background_effect]
-   vk.CmdBindPipeline(cmd, .COMPUTE, effect.pipeline)
-   vk.CmdBindDescriptorSets(cmd, .COMPUTE, self.background_layout.handle, 0, 1, &self.draw_image_descriptors, 0, nil,)
+    effect := &self.background_effect
 
-    vk.CmdPushConstants(cmd, self.background_layout.handle, {.COMPUTE}, 0, size_of(Compute_Push_Constants), &effect.data,)
+    shader_pipeline_bind(&effect.pipeline, cmd, self)
+    shader_pipeline_bind_push_constants(&effect.pipeline, cmd, self, &effect.data, {.COMPUTE})
     vk.CmdDispatch(cmd, 
         u32(math.ceil_f32(f32(self.draw_extent.width) / 16.0)), 
         u32(math.ceil_f32(f32(self.draw_extent.height) / 16.0)),
         1,)
 
- return true
+    return true
 }
 
 engine_draw_imgui :: proc(self: ^Engine, cmd: vk.CommandBuffer, target_view: vk.ImageView,) -> (ok: bool,) {
@@ -284,38 +283,6 @@ engine_ui_definition :: proc(self: ^Engine) {
 
     if im.Begin("Background", nil, {.AlwaysAutoResize}) {
         im.SliderFloat("Render scale", &self.render_scale, 0.3, 1.0)
-
-        selected := &self.background_effects[self.current_background_effect]
-
-        im.Text("Selected effect: %s", selected.name)
-
-        @(static) current_background_effect: i32
-        current_background_effect = i32(self.current_background_effect)
-
-        // If the combo is opened and an item is selected, update the current effect
-        if im.BeginCombo("Effect", selected.name) {
-            for effect, i in self.background_effects {
-                is_selected := i32(i) == current_background_effect
-                if im.Selectable(effect.name, is_selected) {
-                    current_background_effect = i32(i)
-                    self.current_background_effect = Compute_Effect_Kind(
-                        current_background_effect,
-                    )
-                }
-
-                // Set initial focus when the currently selected item becomes visible
-                if is_selected {
-                    im.SetItemDefaultFocus()
-                }
-            }
-            im.EndCombo()
-        }
-
-        im.SliderFloat4("data1", &selected.data.data1, 0.0, 10.0)
-        im.SliderFloat4("data2", &selected.data.data2, 0.0, 10.0)
-        im.SliderFloat4("data3", &selected.data.data3, 0.0, 10.0)
-        im.SliderFloat4("data4", &selected.data.data4, 0.0, 10.0)
-
     }
     im.End()
 
