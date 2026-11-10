@@ -443,14 +443,7 @@ engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
     pipeline_builder_bind_push_constants(&builder, &self.background_effect.data, {.COMPUTE})
     self.background_effect.pipeline = compute_pipeline_builder_build(&builder, self) or_return
 
-
     return true
-}
-
-// Builds a compute pipeline for the background layout, checking the shader's bindings against it first.
-engine_create_compute_pipeline :: proc(self: ^Engine, shader_name: string, loc :=#caller_location) -> (pipeline: vk.Pipeline, ok: bool) {
-    shader_asset := shader_manager_get_shader(&self.shader_manager, shader_name, loc) or_return
-    return compute_pipeline_create(self.vk_device, &self.background_layout, shader_asset.spirv_bytes, shader_name)
 }
 
 engine_build_pipelines :: proc(self: ^Engine) -> (ok: bool) {
@@ -490,7 +483,6 @@ engine_init_pipelines :: proc(self: ^Engine) -> (ok: bool) {
     engine_init_background_pipelines(self) or_return
     log.debugf("---Metalic Pipelines")
     metallic_roughness_build_pipeline(&self.metal_rough_material, self) or_return
-    log.debugf("---Ocean Material")
 
 
     return true

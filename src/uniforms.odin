@@ -177,6 +177,7 @@ Compute_Pipeline_Builder :: struct {
 Graphics_Pipeline_Builder :: struct {
     using base: Pipeline_Builder_Base,
     shaders: Render_Shaders,
+    debug_enabled: b32,
     graphics: Graphics_Pipeline_Options,
 }
 
@@ -598,7 +599,7 @@ pipeline_builder_bind_push_constants :: proc(self: ^Pipeline_Builder_Base, push_
 
 
 /*
-    Uniforms are for relatively small amounts of data taht you want to change regularly.
+    Uniforms are for relatively small amounts of data that you want to change regularly.
 */
 pipeline_builder_bind_uniform_ptr :: proc(self: ^Pipeline_Builder_Base, data: ^^$T, name: string, loc := #caller_location) -> (mem_ref: Memory_Reference) {
     set, binding, found := pipeline_builder_resolve_binding(self, name, loc)
@@ -943,6 +944,23 @@ graphics_pipeline_builder_build :: proc(self: ^Graphics_Pipeline_Builder, engine
         delete(self.shader_pipeline.resources)
         return pipeline, false
     }
+    if self.shaders.geometry.name != "" && !engine.vk_context.physical_device.features.geometryShader {
+        log.errorf("The selected Vulkan device does not support geometry shaders")
+        delete(self.shader_pipeline.resources)
+        return pipeline, false
+    }
+    if self.shaders.tessellation_control.name != "" {
+        if !engine.vk_context.physical_device.features.tessellationShader {
+            log.errorf("The selected Vulkan device does not support tessellation shaders")
+            delete(self.shader_pipeline.resources)
+            return pipeline, false
+        }
+        if self.graphics.input_assembly.topology != .PATCH_LIST || self.graphics.tessellation_state.patchControlPoints == 0 {
+            log.errorf("Tessellation requires PATCH_LIST topology and a nonzero patch control point count")
+            delete(self.shader_pipeline.resources)
+            return pipeline, false
+        }
+    }
     pipeline = self.shader_pipeline
     defer if !ok {
         shader_pipeline_destroy(&pipeline)
@@ -980,26 +998,34 @@ graphics_pipeline_builder_build :: proc(self: ^Graphics_Pipeline_Builder, engine
     defer delete(module_infos)
 
     for stage in self.reflect_layout.stage_params {
-        module : vk.ShaderModule
+        shader: ^Shader
         #partial switch stage.stage {
         case .VERTEX:
-            module, ok = shader_get_module(self.vk_device, engine, &self.shaders.vertex)
+            shader = &self.shaders.vertex
         case .TESSELLATION_CONTROL:
-            module, ok = shader_get_module(self.vk_device, engine, &self.shaders.tessellation_control)
+            shader = &self.shaders.tessellation_control
         case .TESSELLATION_EVALUATION:
-            module, ok = shader_get_module(self.vk_device, engine, &self.shaders.tessellation_evaluation)
+            shader = &self.shaders.tessellation_evaluation
         case .GEOMETRY:
-            module, ok = shader_get_module(self.vk_device, engine, &self.shaders.geometry)
+            shader = &self.shaders.geometry
         case .FRAGMENT:
-            module, ok = shader_get_module(self.vk_device, engine, &self.shaders.fragment)
+            shader = &self.shaders.fragment
         }
-
-        if !ok{
-            log.errorf("Failed to create shader module") 
+        if shader == nil {
+            log.errorf("Unsupported graphics shader stage: %v", stage.stage)
             return pipeline, false
         }
-
-        append(&module_infos, pipeline_shader_stage_create_info({stage.stage}, module, "main"))
+        module, module_ok := shader_get_module(self.vk_device, engine, shader)
+        if !module_ok {
+            log.errorf("Failed to create shader module for %v", shader.name)
+            return pipeline, false
+        }
+        // SPIRV-Reflect uses the first entry point for graphics stage interfaces.
+        entry_point: cstring = "main"
+        if len(shader.entry_points) > 0 {
+            entry_point = strings.clone_to_cstring(shader.entry_points[0], context.temp_allocator)
+        }
+        append(&module_infos, pipeline_shader_stage_create_info({stage.stage}, module, entry_point))
     }
     flags := self.graphics.flags | {.DESCRIPTOR_BUFFER_EXT}
     pipeline_create_info := vk.GraphicsPipelineCreateInfo {
@@ -1029,12 +1055,20 @@ graphics_pipeline_builder_build :: proc(self: ^Graphics_Pipeline_Builder, engine
     return pipeline, true
 }
 
+graphics_pipeline_builder_variant_enable_debug :: proc(self:^Graphics_Pipeline_Builder) {
+    self.debug_enabled = true
+}
+
 // Graphics Options
 graphics_pipeline_builder_set_input_topology :: proc(self: ^Graphics_Pipeline_Builder, topology: vk.PrimitiveTopology, primitive_restart_enable: bool = false,) {
 
     self.graphics.input_assembly.topology = topology
     self.graphics.input_assembly.primitiveRestartEnable = b32(primitive_restart_enable)
 
+}
+
+graphics_pipeline_builder_set_patch_control_points :: proc(self: ^Graphics_Pipeline_Builder, count: u32) {
+    self.graphics.tessellation_state.patchControlPoints = count
 }
 
 graphics_pipeline_builder_set_polygon_mode :: proc(self: ^Graphics_Pipeline_Builder, polygon_mode: vk.PolygonMode, line_width: f32 = 1.0,) {

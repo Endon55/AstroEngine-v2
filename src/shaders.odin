@@ -15,9 +15,8 @@ import "core:math/bits"
 import vk "vendor:vulkan"
 import spirv "libs:spirv-reflect"
 
-// Bump this when the cached SPIR-V format changes. v2 modules contain every entry
-// point in one file (v1 files held only the first entry point).
-SHADER_CACHE_VERSION :: "v2"
+// v3 uses filename-aware stages, SPIR-V 1.4, and preserved entry-point names.
+SHADER_CACHE_VERSION :: "v3"
 
 Shader :: struct {
     name: string,
@@ -26,8 +25,8 @@ Shader :: struct {
     stage: vk.ShaderStageFlag,
     modify_time: time.Time,
     spirv_bytes: []byte,
-    // Every entry point contained in `spirv_bytes`, in the order Slang reports them.
-    // Multi-entry-point modules keep all their pipelines compatible with one layout.
+    // Every entry point contained in `spirv_bytes`, in SPIR-V order. Multi-entry-point
+    // modules keep all their pipelines compatible with one layout.
     entry_points: []string,
     //Not Guaranteed to be valid, call Shader_Get_Module().
     module: vk.ShaderModule,
@@ -86,9 +85,9 @@ shader_manager_add_directory :: proc(self: ^Shader_Manager, directory: string, d
     append(&self.shader_dirs, shader_dir)
     ok = shader_manager_update_shaders(self, &self.shader_dirs[len(self.shader_dirs) - 1], "")
     if !ok {
-
+        self.build_status = .Failed
     }
-    return true
+    return ok
 }
 
 shader_manager_get_shader :: proc(self:^Shader_Manager, name: string, loc:=#caller_location) -> (shader: Shader, ok:bool) {
@@ -169,12 +168,12 @@ shader_manager_init :: proc(self: ^Shader_Manager) -> (ok: bool) {
 
     calling_directory := quick_calling_dir(context.allocator) or_return
     shader_dir := quick_concat({calling_directory, "/shaders/"}) or_return
-    shader_manager_add_directory(self, shader_dir)
+    self.build_status = .Success
+    ok = shader_manager_add_directory(self, shader_dir)
     delete(calling_directory)
     delete(shader_dir)
-    self.build_status = .Success
 
-    return true
+    return ok
 }
 
 SHADER_COMPILE_DEBOUNCE :: time.Second * 3
@@ -379,17 +378,17 @@ shader_resolve_include :: proc(
         return "", false
     }
 
-    local, local_ok := quick_concat({shader_path_directory(including_file), "/", name}, allocator)
-    if local_ok {
+    local, local_err := strings.concatenate({shader_path_directory(including_file), "/", name}, allocator)
+    if local_err == nil {
         if os.exists(local) {
             return local, true
         }
-        delete(local)
+        delete(local, allocator)
     }
 
     for shader_dir in self.shader_dirs {
-        candidate, candidate_ok := quick_concat({shader_dir.source_directory, name}, allocator)
-        if !candidate_ok {
+        candidate, candidate_err := strings.concatenate({shader_dir.source_directory, name}, allocator)
+        if candidate_err != nil {
             continue
         }
         if os.exists(candidate) {
@@ -445,7 +444,7 @@ shader_source_latest_time :: proc(
         }
 
         resolved, resolved_ok := shader_resolve_include(self, path, name, allocator)
-        defer delete(resolved)
+        defer delete(resolved, allocator)
         if !resolved_ok {
             log.warnf("Could not resolve shader dependency '%v' included by '%v'", name, path)
             continue
@@ -464,186 +463,183 @@ shader_source_latest_time :: proc(
     return latest, latest_path, true
 }
 
-shader_determine_stage :: proc(filename: string) -> (stage:vk.ShaderStageFlag) {
- 
-    split_name, err_split := strings.split(filename, ".", context.allocator)
-    defer delete(split_name)
-    if err_split != .None  {
+// The stage is the last component before .slang, so names may themselves contain dots.
+// Files without a stage suffix are treated as includes by the directory scanner.
+shader_determine_stage :: proc(filename: string) -> (stage: vk.ShaderStageFlag) {
+    base := filepath.base(filename)
+    if !strings.ends_with(base, ".slang") {
         return ._MAX
     }
-    //means that it's not defined in the file path and we assume it's an include file
-    size := len(split_name)  
-    if size < 2 {
+    stem := base[:len(base) - len(".slang")]
+    dot := strings.last_index_byte(stem, '.')
+    if dot < 0 {
         return ._MAX
     }
-    else if size == 2 {
-        return .CALLABLE_KHR
+
+    switch stem[dot + 1:] {
+    case "vert", "vertex":                                      return .VERTEX
+    case "tesc", "tesscontrol", "tess_control", "tessellation_control", "hull":
+        return .TESSELLATION_CONTROL
+    case "tese", "tesseval", "tess_eval", "tessellation_evaluation", "domain":
+        return .TESSELLATION_EVALUATION
+    case "geom", "geometry":                                    return .GEOMETRY
+    case "frag", "fragment", "pixel":                           return .FRAGMENT
+    case "comp", "compute":                                     return .COMPUTE
+    case "rgen", "raygen", "raygeneration", "ray_generation":   return .RAYGEN_KHR
+    case "rint", "intersection":                                return .INTERSECTION_KHR
+    case "rahit", "anyhit", "any_hit":                          return .ANY_HIT_KHR
+    case "rchit", "closesthit", "closest_hit":                  return .CLOSEST_HIT_KHR
+    case "rmiss", "miss":                                       return .MISS_KHR
+    case "rcall", "callable":                                   return .CALLABLE_KHR
+    case "task", "amplification":                               return .TASK_EXT
+    case "mesh":                                                return .MESH_EXT
     }
-    switch split_name[1]{
-    case "vert", "vertex": 
-        return .VERTEX
-    case "frag", "fragment":
-        return .FRAGMENT
-    case "comp", "compute":
-        return .COMPUTE
-    }
-    log.warnf("Un-Mapped shader type: %v", split_name[1])
-    return ._MAX 
+    return ._MAX
 }
 
-shader_manager_update_shaders :: proc(self: ^Shader_Manager, shader_dir: ^Shader_Dir, path_from_shader_dir:string) ->(ok:bool) {
-    
+@(private)
+shader_slang_stage :: proc(stage: vk.ShaderStageFlag) -> SlangStage {
+    #partial switch stage {
+    case .VERTEX:                  return SLANG_STAGE_VERTEX
+    case .TESSELLATION_CONTROL:    return SLANG_STAGE_HULL
+    case .TESSELLATION_EVALUATION: return SLANG_STAGE_DOMAIN
+    case .GEOMETRY:                return SLANG_STAGE_GEOMETRY
+    case .FRAGMENT:                return SLANG_STAGE_FRAGMENT
+    case .COMPUTE:                 return SLANG_STAGE_COMPUTE
+    case .RAYGEN_KHR:              return SLANG_STAGE_RAY_GENERATION
+    case .INTERSECTION_KHR:        return SLANG_STAGE_INTERSECTION
+    case .ANY_HIT_KHR:             return SLANG_STAGE_ANY_HIT
+    case .CLOSEST_HIT_KHR:         return SLANG_STAGE_CLOSEST_HIT
+    case .MISS_KHR:                return SLANG_STAGE_MISS
+    case .CALLABLE_KHR:            return SLANG_STAGE_CALLABLE
+    case .TASK_EXT:                return SLANG_STAGE_AMPLIFICATION
+    case .MESH_EXT:                return SLANG_STAGE_MESH
+    }
+    return SLANG_STAGE_NONE
+}
+
+@(private = "file")
+shader_delete_data :: proc(shader: ^Shader) {
+    delete(shader.name)
+    delete(shader.spirv_bytes)
+    delete(shader.compiled_path)
+    delete(shader.source_path)
+    for entry_point in shader.entry_points {
+        delete(entry_point)
+    }
+    delete(shader.entry_points)
+    shader^ = {}
+}
+
+shader_manager_update_shaders :: proc(self: ^Shader_Manager, shader_dir: ^Shader_Dir, path_from_shader_dir: string) -> (ok: bool) {
     src: string = quick_concat({shader_dir.source_directory, path_from_shader_dir}) or_return
     defer delete(src)
 
-    file_infos: []os.File_Info = load_directory_contents_from_disc(src) or_return 
-    defer delete(file_infos) 
-    for i in 0..<len(file_infos) {   
-        info := file_infos[i]
+    file_infos: []os.File_Info = load_directory_contents_from_disc(src) or_return
+    defer delete(file_infos)
+    all_ok := true
+    for info in file_infos {
+        defer delete(info.fullpath)
         if info.type == .Directory {
-            next:= quick_concat({path_from_shader_dir, info.name, "/"}) or_return
-            shader_manager_update_shaders(self, shader_dir, next)
+            next := quick_concat({path_from_shader_dir, info.name, "/"}) or_return
+            if !shader_manager_update_shaders(self, shader_dir, next) {
+                all_ok = false
+            }
             delete(next)
+            continue
         }
         if !strings.ends_with(info.name, ".slang") {
-            defer delete(info.fullpath)
             continue
         }
 
-        spirv: []byte
-        entry_points: []string
-        compiled: Slang_Compiled_Module
-        stage: vk.ShaderStageFlag = shader_determine_stage(info.name)    
+        filename_stripped := info.name[:len(info.name) - len(".slang")]
+        if strings.last_index_byte(filename_stripped, '.') < 0 {
+            // Unstaged .slang files are includes, not callable shaders.
+            continue
+        }
+        stage := shader_determine_stage(info.name)
         if stage == ._MAX {
-            log.errorf("Failed to determine shader type for: %v", info.fullpath)
-            return false
-        } 
-        else if stage == .CALLABLE_KHR {
-            delete(info.fullpath)
+            log.errorf("Unknown shader stage in filename: %v", info.fullpath)
+            all_ok = false
             continue
         }
-        filename_stripped, strip_ok := strings.substring(info.name, 0, len(info.name) - len(".slang"))
-        if !strip_ok {
-            log.errorf("Failed to substring .slang from: %v", info.name)
-            return false
+
+        shader: Shader
+        keep_shader := false
+        defer if !keep_shader {
+            shader_delete_data(&shader)
         }
-        relative_name := quick_concat({path_from_shader_dir, filename_stripped} ) or_return
+        shader.name = quick_concat({path_from_shader_dir, filename_stripped}) or_return
+        shader.source_path = strings.clone(info.fullpath)
+        shader.compiled_path = quick_concat({shader_dir.compiled_directory, shader.name, ".", SHADER_CACHE_VERSION, ".spv"}) or_return
+        shader.stage = stage
+        shader.module = bits.U64_MAX
 
-        // Bump this when the cached SPIR-V format changes. v2 modules contain every
-        // entry point in one file (v1 files held only the first entry point).
-        compile_path := quick_concat({shader_dir.compiled_directory,relative_name, ".", SHADER_CACHE_VERSION, ".spv"}, context.allocator) or_return
-
-
-        // Use the newest timestamp across the shader and its include graph so that
-        // editing a shared header invalidates every dependent shader. The saved
-        // SPIR-V is given this same timestamp, which keeps the equality check in
-        // shader_manager_is_out_of_date stable across runs.
-        //
-        // All strings produced by the scan live in this per-shader arena. They must
-        // stay valid for the whole iteration (newest_dependency is used in the log
-        // below), and they must be released with the same allocator they came from.
-        // Freeing a temp-arena string with the heap allocator corrupts the heap.
+        // The newest include timestamp invalidates the dependent shader's cache.
         scan_arena: mem.Dynamic_Arena
         mem.dynamic_arena_init(&scan_arena)
         defer mem.dynamic_arena_destroy(&scan_arena)
         scan_allocator := mem.dynamic_arena_allocator(&scan_arena)
-
-        modify_time := info.modification_time
-        newest_dependency := info.fullpath
+        shader.modify_time = info.modification_time
         visited := make(map[string]bool)
-        if latest, latest_path, latest_ok := shader_source_latest_time(self, info.fullpath, &visited, scan_allocator); latest_ok {
-            modify_time = latest
-            newest_dependency = latest_path
+        if latest, _, latest_ok := shader_source_latest_time(self, info.fullpath, &visited, scan_allocator); latest_ok {
+            shader.modify_time = latest
         }
         delete(visited)
 
-        shader: Shader = {
-            name = relative_name,
-            source_path = info.fullpath,
-            modify_time = modify_time,
-            compiled_path = compile_path,
-            stage = stage,
-            module = bits.U64_MAX,
+        out_of_date := shader_manager_is_out_of_date(&shader)
+        if !out_of_date && self.compile_only {
+            continue
         }
-        out_of_date:= shader_manager_is_out_of_date(&shader)
-        
-        if out_of_date
-        {
-            // if newest_dependency != info.fullpath {
-            //     log.infof(
-            //         "shader(%v) is stale because included file '%v' is newer than the cached SPIR-V",
-            //         shader.name,
-            //         newest_dependency,
-            //     )
-            // }
+        if !out_of_date {
+            cached, loaded := load_file_from_disc(shader.compiled_path)
+            if loaded {
+                shader.spirv_bytes = cached
+                shader.entry_points, loaded = spirv_entry_point_names(cached, stage)
+            }
+            if !loaded {
+                log.warnf("Cached shader '%v' is invalid or has the wrong stage; recompiling", shader.name)
+                delete(shader.spirv_bytes)
+                shader.spirv_bytes = nil
+                out_of_date = true
+            }
+        }
+        if out_of_date {
             log.debugf("shader(%v) is out of date: recompiling", shader.name)
-            compiled, ok = shader_manager_compile_shader(self, shader_dir, shader.source_path)
-            if !ok {
-                log.errorf("Failed to compile out of date shader(%v)", shader.name)
+            compiled, compiled_ok := shader_manager_compile_shader(self, shader_dir, shader.source_path, stage)
+            if !compiled_ok {
+                log.errorf("Failed to compile shader(%v)", shader.name)
+                all_ok = false
                 continue
             }
-            spirv = compiled.spirv
-            entry_points = make([]string, len(compiled.entry_points))
-            for entry_point, index in compiled.entry_points {
-                entry_points[index] = entry_point.name
+            shader.spirv_bytes = compiled.spirv
+            compiled.spirv = nil
+            slang_compiled_module_destroy(&compiled)
+            valid: bool
+            shader.entry_points, valid = spirv_entry_point_names(shader.spirv_bytes, stage)
+            if !valid {
+                log.errorf("Compiled shader '%v' has invalid SPIR-V or an unexpected stage", shader.name)
+                all_ok = false
+                continue
             }
-            // The names are moved into `entry_points`; don't let the module free them.
-            delete(compiled.entry_points)
-            compiled.entry_points = nil
+            if !shader_manager_save_compiled_shader(self, &shader) {
+                all_ok = false
+                continue
+            }
         }
-        else if self.compile_only {
-            delete(shader.name)
-            delete(shader.source_path)
-            delete(shader.compiled_path)
-            continue
-        }
-        else {
-            spirv = load_file_from_disc(shader.compiled_path,) or_return
-            entry_points = spirv_entry_point_names(spirv)
-        }
-
-        if len(entry_points) == 0 {
-            log.warnf("Shader '%v' has no OpEntryPoint names; falling back to 'main'", shader.name)
-            entry_points = make([]string, 1)
-            entry_points[0] = strings.clone("main")
-        }
-
-        shader.spirv_bytes = spirv
-        shader.entry_points = entry_points
-
-        shader.stage = stage
         if self.compile_only {
-            saved := shader_manager_save_compiled_shader(self, &shader)
-            delete(shader.name)
-            delete(shader.spirv_bytes)
-            delete(shader.source_path)
-            delete(shader.compiled_path)
-            for entry_point in shader.entry_points {
-                delete(entry_point)
-            }
-            delete(shader.entry_points)
-            saved or_return
             continue
         }
-        qualified_name := shader_manager_qualify_name(shader_dir.domain, relative_name)
+
+        qualified_name := shader_manager_qualify_name(shader_dir.domain, shader.name)
         if old_key, existing := delete_key(&self.shaders, qualified_name); old_key != "" {
             delete(old_key)
-            delete(existing.name)
-            delete(existing.spirv_bytes)
-            delete(existing.compiled_path)
-            delete(existing.source_path)
-            for entry_point in existing.entry_points {
-                delete(entry_point)
-            }
-            delete(existing.entry_points)
+            shader_delete_data(&existing)
         }
         self.shaders[qualified_name] = shader
-
-        if out_of_date{
-            shader_manager_save_compiled_shader(self, &self.shaders[qualified_name])or_return
-        }
-    }   
-    return true
+        keep_shader = true
+    }
+    return all_ok
 }
 
 
@@ -655,8 +651,17 @@ shader_manager_save_compiled_shader :: proc(self: ^Shader_Manager, shader: ^Shad
 }
 
 
-shader_manager_compile_shader :: proc(self: ^Shader_Manager, shader_dir:^ Shader_Dir, source_path: string,) -> (compiled: Slang_Compiled_Module, ok: bool,) {
+shader_manager_compile_shader :: proc(self: ^Shader_Manager, shader_dir: ^Shader_Dir, source_path: string, stage: vk.ShaderStageFlag = ._MAX) -> (compiled: Slang_Compiled_Module, ok: bool) {
 
+    selected_stage := stage
+    if selected_stage == ._MAX {
+        selected_stage = shader_determine_stage(source_path)
+    }
+    expected_stage := shader_slang_stage(selected_stage)
+    if expected_stage == SLANG_STAGE_NONE {
+        log.errorf("Slang does not support shader stage %v for %v", selected_stage, source_path)
+        return {}, false
+    }
     shader_bytes := load_file_from_disc(source_path,) or_return 
     defer delete(shader_bytes)
     module_name := filepath.stem(source_path)
@@ -671,6 +676,7 @@ shader_manager_compile_shader :: proc(self: ^Shader_Manager, shader_dir:^ Shader
         module_name,
         source_path,
         search_paths[:],
+        expected_stage = expected_stage,
     ) or_return
     // for entry_point in compiled.entry_points {
     //     log.debugf("Entry Point: %v", entry_point.name)
@@ -679,38 +685,76 @@ shader_manager_compile_shader :: proc(self: ^Shader_Manager, shader_dir:^ Shader
     return compiled, true
 }
 
-// Reads the entry point names out of a SPIR-V module (OpEntryPoint). Used when a
-// compiled module is loaded from disk, so the shader manager can rebuild the entry
-// point list without recompiling.
-@(private = "file")
-spirv_entry_point_names :: proc(code: []byte, allocator := context.allocator) -> []string {
+@(private)
+shader_spirv_stage :: proc(model: u32) -> vk.ShaderStageFlag {
+    #partial switch spirv.SpvExecutionModel(model) {
+    case .Vertex:                 return .VERTEX
+    case .TessellationControl:    return .TESSELLATION_CONTROL
+    case .TessellationEvaluation: return .TESSELLATION_EVALUATION
+    case .Geometry:               return .GEOMETRY
+    case .Fragment:               return .FRAGMENT
+    case .GLCompute:              return .COMPUTE
+    case .RayGenerationKHR:       return .RAYGEN_KHR
+    case .IntersectionKHR:        return .INTERSECTION_KHR
+    case .AnyHitKHR:              return .ANY_HIT_KHR
+    case .ClosestHitKHR:          return .CLOSEST_HIT_KHR
+    case .MissKHR:                return .MISS_KHR
+    case .CallableKHR:            return .CALLABLE_KHR
+    case .TaskNV, .TaskEXT:       return .TASK_EXT
+    case .MeshNV, .MeshEXT:       return .MESH_EXT
+    }
+    return ._MAX
+}
+
+// Rebuild the entry point list from the actual SPIR-V, both after compilation and
+// when loading a cache. Reject malformed files and entry points for the wrong stage.
+@(private)
+spirv_entry_point_names :: proc(code: []byte, expected_stage: vk.ShaderStageFlag, allocator := context.allocator) -> (result: []string, ok: bool) {
     SPIRV_MAGIC :: 0x07230203
     SPIRV_HEADER_WORDS :: 5
     OP_ENTRY_POINT :: 15
 
     if len(code) < SPIRV_HEADER_WORDS * 4 || len(code) % 4 != 0 {
-        return nil
+        return nil, false
     }
     words := mem.slice_data_cast([]u32, code)
     if words[0] != SPIRV_MAGIC {
-        return nil
+        return nil, false
     }
 
     names := make([dynamic]string, allocator)
+    defer delete(names)
+    defer if !ok {
+        for name in names {
+            delete(name, allocator)
+        }
+    }
     for i := SPIRV_HEADER_WORDS; i < len(words); {
         word_count := int(words[i] >> 16)
         if word_count == 0 || i + word_count > len(words) {
-            break
+            return nil, false
         }
         opcode := words[i] & 0xFFFF
-        if opcode == OP_ENTRY_POINT && word_count >= 4 {
-            name := string(cstring(rawptr(&words[i + 3])))
-            append(&names, strings.clone(name, allocator))
+        if opcode == OP_ENTRY_POINT {
+            if word_count < 4 || shader_spirv_stage(words[i + 1]) != expected_stage {
+                return nil, false
+            }
+            name_and_interfaces := string(code[(i + 3) * 4:(i + word_count) * 4])
+            name_end := strings.index_byte(name_and_interfaces, 0)
+            if name_end <= 0 {
+                return nil, false
+            }
+            append(&names, strings.clone(name_and_interfaces[:name_end], allocator))
         }
         i += word_count
     }
 
-    return names[:]
+    if len(names) == 0 {
+        return nil, false
+    }
+    result = make([]string, len(names), allocator)
+    copy(result, names[:])
+    return result, true
 }
 shader_manager_deinit :: proc(self: ^Shader_Manager) {
     if self.hot_reload_thread != nil {
@@ -843,7 +887,7 @@ Binding_Layout :: struct {
     type: vk.DescriptorType,
 }
 
-@(private="file")
+@(private)
 validate_input_outputs :: proc(stage_params:^[dynamic]Stage_Params) ->(ok:bool,) {
     count:= len(stage_params)
     if count == 0 || count == 1 {
@@ -1057,46 +1101,46 @@ shaders_generate_raw_layout_render:: proc(vk_device: vk.Device, render_shaders: 
     layout.layout = make(map[u32]map[u32]vk.DescriptorSetLayoutBinding)
     layout.binding_reflections = make(map[string][dynamic]Resource_Reflection)
     layout.push_constants = make([dynamic]vk.PushConstantRange)
-    layout.stage_params = make([dynamic]Stage_Params) 
-    if render_shaders.vertex.name != "" && render_shaders.vertex.stage != .VERTEX {
+    layout.stage_params = make([dynamic]Stage_Params)
+    if render_shaders.vertex.name == "" || render_shaders.vertex.stage != .VERTEX {
         log.errorf("Invalid Vertex Shader")
         return layout, false
     }
-    else {
-        shaders_generate_layout_raw(&layout, render_shaders.vertex) or_return
-    }
-    if render_shaders.fragment.name != "" && render_shaders.fragment.stage != .FRAGMENT {
-        log.errorf("Invalid Fragment Shader")
+    shaders_generate_layout_raw(&layout, render_shaders.vertex) or_return
+
+    // Interface validation compares adjacent stages, so reflection must follow
+    // the actual graphics pipeline order rather than the order of struct fields.
+    has_control := render_shaders.tessellation_control.name != ""
+    has_evaluation := render_shaders.tessellation_evaluation.name != ""
+    if has_control != has_evaluation {
+        log.errorf("Tessellation control and evaluation shaders must be provided together")
         return layout, false
     }
-    else {
-        shaders_generate_layout_raw(&layout, render_shaders.fragment) or_return
-    }
-    if render_shaders.tessellation_control.name != "" {
+    if has_control {
         if render_shaders.tessellation_control.stage != .TESSELLATION_CONTROL {
             log.errorf("Invalid Tessellation Control Shader")
             return layout, false
-        }   
-        else {
-            shaders_generate_layout_raw(&layout, render_shaders.tessellation_control) or_return
         }
-        //Evaluation Shaders are required if you have a Control shader
-        if render_shaders.tessellation_evaluation.name == "" || render_shaders.tessellation_evaluation.stage != .TESSELLATION_EVALUATION {
-            log.errorf("Invalid Tessellation Evaluation Shader. Evaluation shaders are required when using Control shaders.")
+        shaders_generate_layout_raw(&layout, render_shaders.tessellation_control) or_return
+        if render_shaders.tessellation_evaluation.stage != .TESSELLATION_EVALUATION {
+            log.errorf("Invalid Tessellation Evaluation Shader")
             return layout, false
-        }   
-        else {
-            shaders_generate_layout_raw(&layout, render_shaders.tessellation_evaluation) or_return
         }
+        shaders_generate_layout_raw(&layout, render_shaders.tessellation_evaluation) or_return
     }
     if render_shaders.geometry.name != "" {
         if render_shaders.geometry.stage != .GEOMETRY {
             log.errorf("Invalid Geometry Shader")
             return layout, false
         }
-        else {
-            shaders_generate_layout_raw(&layout, render_shaders.geometry) or_return
+        shaders_generate_layout_raw(&layout, render_shaders.geometry) or_return
+    }
+    if render_shaders.fragment.name != "" {
+        if render_shaders.fragment.stage != .FRAGMENT {
+            log.errorf("Invalid Fragment Shader")
+            return layout, false
         }
+        shaders_generate_layout_raw(&layout, render_shaders.fragment) or_return
     }
 
     return layout, true

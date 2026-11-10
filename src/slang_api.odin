@@ -51,9 +51,21 @@ SLANG_SOURCE_LANGUAGE_SLANG :: SlangSourceLanguage(1)
 SLANG_SOURCE_LANGUAGE_HLSL :: SlangSourceLanguage(2)
 SLANG_SOURCE_LANGUAGE_GLSL :: SlangSourceLanguage(3)
 
-SLANG_STAGE_VERTEX :: SlangStage(1)
-SLANG_STAGE_FRAGMENT :: SlangStage(5)
-SLANG_STAGE_COMPUTE :: SlangStage(6)
+SLANG_STAGE_NONE           :: SlangStage(0)
+SLANG_STAGE_VERTEX         :: SlangStage(1)
+SLANG_STAGE_HULL           :: SlangStage(2)
+SLANG_STAGE_DOMAIN         :: SlangStage(3)
+SLANG_STAGE_GEOMETRY       :: SlangStage(4)
+SLANG_STAGE_FRAGMENT       :: SlangStage(5)
+SLANG_STAGE_COMPUTE        :: SlangStage(6)
+SLANG_STAGE_RAY_GENERATION :: SlangStage(7)
+SLANG_STAGE_INTERSECTION   :: SlangStage(8)
+SLANG_STAGE_ANY_HIT        :: SlangStage(9)
+SLANG_STAGE_CLOSEST_HIT    :: SlangStage(10)
+SLANG_STAGE_MISS           :: SlangStage(11)
+SLANG_STAGE_CALLABLE       :: SlangStage(12)
+SLANG_STAGE_MESH           :: SlangStage(13)
+SLANG_STAGE_AMPLIFICATION  :: SlangStage(14)
 
 SLANG_PROFILE_UNKNOWN :: SlangProfileID(0)
 
@@ -168,7 +180,7 @@ IGlobalSession_Vtbl :: struct {
     compileCoreModule:                  rawptr,
     loadCoreModule:                     rawptr,
     saveCoreModule:                     rawptr,
-    findCapability:                     rawptr,
+    findCapability:                     proc "c" (this: ^IGlobalSession, name: cstring) -> SlangCapabilityID,
     setDownstreamCompilerForTransition: rawptr,
     getDownstreamCompilerForTransition: rawptr,
     getCompilerElapsedTime:             rawptr,
@@ -280,6 +292,8 @@ module_as_component :: proc(m: ^IModule) -> ^IComponentType {
 CompilerOptionName :: distinct c.int32_t
 // Forces row-major matrix layout regardless of session/target defaults, matching `-matrix-layout-row-major`.
 SLANG_COMPILER_OPTION_NAME_MATRIX_LAYOUT_ROW :: CompilerOptionName(9)
+SLANG_COMPILER_OPTION_NAME_CAPABILITY :: CompilerOptionName(39)
+SLANG_COMPILER_OPTION_NAME_VULKAN_USE_ENTRY_POINT_NAME :: CompilerOptionName(52)
 
 CompilerOptionValueKind :: distinct c.int32_t
 SLANG_COMPILER_OPTION_VALUE_KIND_INT :: CompilerOptionValueKind(0)

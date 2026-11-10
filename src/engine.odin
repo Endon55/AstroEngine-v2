@@ -142,9 +142,8 @@ GPU_Scene_Data :: struct {
     view: la.Matrix4x4f32,
     proj: la.Matrix4x4f32,
     viewproj: la.Matrix4x4f32,
-    ambient_color: la.Vector4f32,
-    sunlight_direction: la.Vector4f32,
-    sunlight_color: la.Vector4f32,
+    
+    camera_position: la.Vector3f32,
 }
 
 Compute_Push_Constants :: struct {
@@ -194,9 +193,7 @@ engine_update_scene :: proc(self: ^Engine) {
         true,
     )
     self.scene_data.viewproj = la.matrix_mul(self.scene_data.proj, self.scene_data.view)
-    self.scene_data.ambient_color = {0.1, 0.1, 0.1, 0.1}
-    self.scene_data.sunlight_color = {1.0, 1.0, 1.0, 1.0}
-    self.scene_data.sunlight_direction = {0, 1, 0.5, 1.0}
+    self.scene_data.camera_position = self.scene.camera.position
 }
 
 @(require_results)

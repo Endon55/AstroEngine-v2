@@ -23,8 +23,8 @@ session_desc_set_search_paths :: proc(desc: ^SessionDesc, paths: []string, alloc
     desc.searchPathCount = SlangInt(len(paths_c))
 }
 
-// Creates a Slang session that emits SPIR-V, mirroring compile.sh's `-profile glsl_450`
-// so codegen (matrix majorness, SPIR-V version) matches the CLI reference.
+// Match compile.sh's glsl_450 layout while targeting SPIR-V 1.4, the minimum version
+// required by SPV_EXT_mesh_shader. The engine already requires Vulkan 1.3 features.
 @(private = "file")
 slang_session_create :: proc(
     self: ^Slang_Compiler,
@@ -36,6 +36,25 @@ slang_session_create :: proc(
 ) {
     profile := self.global_session.vtbl.findProfile(self.global_session, "glsl_450")
     target := target_desc_default(SLANG_SPIRV, profile)
+    spirv_1_4 := self.global_session.vtbl.findCapability(self.global_session, "spirv_1_4")
+    if spirv_1_4 == SlangCapabilityID(0) {
+        log.error("Slang does not recognize the SPIR-V 1.4 capability")
+        return nil, false
+    }
+    options := [?]CompilerOptionEntry {
+        {
+            name = SLANG_COMPILER_OPTION_NAME_CAPABILITY,
+            value = {kind = SLANG_COMPILER_OPTION_VALUE_KIND_INT, intValue0 = i32(spirv_1_4)},
+        },
+        {
+            // Otherwise a single named entry point is emitted as "main", making
+            // its name differ between freshly compiled and multi-entry modules.
+            name = SLANG_COMPILER_OPTION_NAME_VULKAN_USE_ENTRY_POINT_NAME,
+            value = {kind = SLANG_COMPILER_OPTION_VALUE_KIND_INT, intValue0 = 1},
+        },
+    }
+    target.compilerOptionEntries = &options[0]
+    target.compilerOptionEntryCount = u32(len(options))
     session_desc := session_desc_default(&target, 1)
     session_desc_set_search_paths(&session_desc, search_paths, allocator)
 
@@ -193,9 +212,10 @@ slang_compiled_module_destroy :: proc(self: ^Slang_Compiled_Module, allocator :=
 }
 
 // Compiles every `[shader(...)]`-tagged entry point found in `source` into one SPIR-V
-// module. If none are tagged, falls back to checking a single `main` function against
-// each common stage in turn (compute, then vertex, then fragment) and compiles whichever
-// one type-checks.
+// module. When `expected_stage` is supplied, all discovered entry points must have
+// that stage and an undiscovered `main` is checked against it instead of guessing.
+// Slang infers `[numthreads]`-only task entry points as compute, so task shaders must
+// use `[shader("amplification")]`. Without an expected stage, `main` is probed.
 //
 // Linking all entry points into one module lets reflection report the union of their
 // descriptor bindings, which is exactly what a shared pipeline layout needs: an entry
@@ -210,6 +230,7 @@ slang_compile_module :: proc(
     file_path := "",
     search_paths: []string = nil,
     allocator := context.allocator,
+    expected_stage: SlangStage = SLANG_STAGE_NONE,
 ) -> (
     compiled: Slang_Compiled_Module,
     ok: bool,
@@ -250,17 +271,32 @@ slang_compile_module :: proc(
                 append(&entry_points, ep)
             } else {
                 log.errorf("Failed to get Slang entry point %i in module %s", i, module_name)
+                return {}, false
             }
         }
     } else {
-        // No `[shader(...)]` tags: probe a plain `main` against each common stage and
-        // keep whichever one Slang accepts.
+        // The shader manager knows the stage from the filename. Probing unrelated
+        // stages first can succeed and produce SPIR-V for the wrong stage.
         main_c := strings.clone_to_cstring("main", ta)
-        for stage in ([]SlangStage{SLANG_STAGE_COMPUTE, SLANG_STAGE_VERTEX, SLANG_STAGE_FRAGMENT}) {
+        stages := [?]SlangStage{
+            SLANG_STAGE_COMPUTE, SLANG_STAGE_VERTEX, SLANG_STAGE_FRAGMENT,
+            SLANG_STAGE_HULL, SLANG_STAGE_DOMAIN, SLANG_STAGE_GEOMETRY,
+            SLANG_STAGE_RAY_GENERATION, SLANG_STAGE_INTERSECTION, SLANG_STAGE_ANY_HIT,
+            SLANG_STAGE_CLOSEST_HIT, SLANG_STAGE_MISS, SLANG_STAGE_CALLABLE,
+            SLANG_STAGE_MESH, SLANG_STAGE_AMPLIFICATION,
+        }
+        for stage in stages {
+            if expected_stage != SLANG_STAGE_NONE && stage != expected_stage {
+                continue
+            }
             ep: ^IComponentType
             stage_diagnostics: ^ISlangBlob
             r := module.vtbl.findAndCheckEntryPoint(module, main_c, stage, &ep, &stage_diagnostics)
-            slang_release(stage_diagnostics) // mismatched stages are expected to fail; don't log noise
+            if expected_stage != SLANG_STAGE_NONE {
+                slang_log_diagnostics(stage_diagnostics)
+            } else {
+                slang_release(stage_diagnostics) // Mismatched probes are expected to fail.
+            }
             if r == SLANG_OK && ep != nil {
                 append(&entry_points, ep)
                 break
@@ -323,6 +359,18 @@ slang_compile_module :: proc(
             name = strings.clone(string(spReflectionEntryPoint_getName(refl_ep)), allocator),
             stage = spReflectionEntryPoint_getStage(refl_ep),
         }
+        if expected_stage != SLANG_STAGE_NONE && compiled.entry_points[i].stage != expected_stage {
+            log.errorf(
+                "Slang entry point '%s' in %s has stage %s, but its filename specifies %s",
+                compiled.entry_points[i].name, module_name,
+                slang_stage_name(compiled.entry_points[i].stage), slang_stage_name(expected_stage),
+            )
+            if expected_stage == SLANG_STAGE_AMPLIFICATION && compiled.entry_points[i].stage == SLANG_STAGE_COMPUTE {
+                log.error("Task entry points need [shader(\"amplification\")]; [numthreads] alone is inferred as compute")
+            }
+            slang_compiled_module_destroy(&compiled, allocator)
+            return {}, false
+        }
     }
 
     diagnostics = nil
@@ -337,4 +385,25 @@ slang_compile_module :: proc(
 
     compiled.spirv = slang_blob_to_bytes(code, allocator)
     return compiled, true
+}
+
+@(private = "file")
+slang_stage_name :: proc(stage: SlangStage) -> string {
+    switch stage {
+    case SLANG_STAGE_VERTEX:         return "vertex"
+    case SLANG_STAGE_HULL:           return "tessellation control"
+    case SLANG_STAGE_DOMAIN:         return "tessellation evaluation"
+    case SLANG_STAGE_GEOMETRY:       return "geometry"
+    case SLANG_STAGE_FRAGMENT:       return "fragment"
+    case SLANG_STAGE_COMPUTE:        return "compute"
+    case SLANG_STAGE_RAY_GENERATION: return "ray generation"
+    case SLANG_STAGE_INTERSECTION:   return "intersection"
+    case SLANG_STAGE_ANY_HIT:        return "any hit"
+    case SLANG_STAGE_CLOSEST_HIT:    return "closest hit"
+    case SLANG_STAGE_MISS:           return "miss"
+    case SLANG_STAGE_CALLABLE:       return "callable"
+    case SLANG_STAGE_MESH:           return "mesh"
+    case SLANG_STAGE_AMPLIFICATION:  return "task"
+    }
+    return "unknown"
 }
