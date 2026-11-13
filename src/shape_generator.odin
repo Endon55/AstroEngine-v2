@@ -3,6 +3,7 @@ package astro
 import "core:strings"
 import "core:log"
 import "core:math"
+import la "core:math/linalg"
     /*
            Top Vertices(+z)                      Bottom Vertices(-z)
               v0______v1                             v12______v13  
@@ -237,7 +238,89 @@ generate_plane :: proc (engine: ^Engine, meshes: ^Mesh_Asset_List, size_x, size_
 
 
    return (len(meshes) - 1), true 
-
 }
+//Pizza slice shape
+//spoke_count -> how many center spokes(not including the defeault spokes) 
+//ring_count -> how many rings to split the radius into.
+generate_circular_sector :: proc(engine: ^Engine, arc_angle_degrees: f32, radius:f32, spoke_count: i32, ring_count: i32) -> (mesh_index:int, ok: bool){
+
+    assert(arc_angle_degrees > 0)
+    spokes: i32 = spoke_count + 2
+    spoke_gaps: i32 = spokes - 1
+     
+    center_offset :f32 = 1 
+    sector_length := radius - center_offset
+    rings :i32 = ring_count + 1
+    ring_gaps: i32 = ring_count
+    ring_gap_size := sector_length / f32(ring_gaps)
+    arc_rads := la.to_radians(arc_angle_degrees)
+    arc2 :=  arc_rads / 2
+    spoke_arc : f32 = arc_rads / f32(spoke_gaps)
+    angle :f32 = math.PI / 2
+    angle += arc2
+
+    indices:= make([]u32, spoke_gaps * ring_gaps * 6)
+    vertices:= make([]Vertex, spokes * rings)
+    defer delete(indices)
+    defer delete(vertices)
+
+     
+    
 
 
+    //create vertices
+    index: u32 = 0
+    for y in 0..< rings{
+        ring_rad: f32 = center_offset + f32(y) * ring_gap_size
+        for x in 0..< spokes {
+            spoke_angle := angle - (spoke_arc * f32(x))             
+            x:f32 = ring_rad * math.cos(spoke_angle)
+            y:f32 = ring_rad * math.sin(spoke_angle)
+            // log.infof("x: %v, y: %v", x, y)
+            vertices[index] = {
+                position = {x, y, 0},
+                normal = {0,0,1},
+                uv_x = 0,
+                uv_y = 0,
+                color = {1, 0, 0, 1},
+            }
+            index += 1
+            
+        }
+    }
+
+    //draw triangles
+    index = 0
+    for y in 0..< ring_gaps {
+        for x in 0..< spoke_gaps {
+            ring_index :u32 = u32(y * spokes + x)
+            next_ring_index :u32 = u32((y + 1) * spokes + x)
+
+            indices[index] = ring_index
+            indices[index + 1] = next_ring_index + 1
+            indices[index + 2] = ring_index + 1
+
+            indices[index + 3] = ring_index
+            indices[index + 4] = next_ring_index
+            indices[index + 5] = next_ring_index + 1
+
+            index += 6
+
+        }
+    }
+
+    new_mesh := append_and_get_ref(&engine.scene.meshes, Mesh_Asset{})
+
+    new_mesh.name = strings.clone("Plane", engine.allocator)
+    new_mesh.allocator = engine.allocator
+    new_mesh.surfaces = make([dynamic]Geo_Surface, new_mesh.allocator)
+    
+    new_surface: Geo_Surface
+    new_surface.start_index = 0
+    new_surface.count = u32(len(indices))
+
+    append(&new_mesh.surfaces, new_surface)
+    new_mesh.mesh_buffers = upload_mesh(engine, indices[:], vertices[:]) or_return
+
+   return (len(engine.scene.meshes) - 1), true 
+}

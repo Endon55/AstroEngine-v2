@@ -433,7 +433,7 @@ engine_init_background_pipelines :: proc(self: ^Engine) -> (ok: bool) {
 
     self.background_effect = Compute_Effect {
         name = "Sky",
-        data = {data1 = {0.1, 0.2, 0.4, 0.97}},
+        data = {},
     }
     builder: Compute_Pipeline_Builder
     compute_pipeline_builder_init(&builder, &self.memory_manager, self.vk_device)

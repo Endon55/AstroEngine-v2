@@ -17,6 +17,8 @@ Camera :: struct {
     type: Camera_Type,
     transform: la.Matrix4f32, // camera-to-world matrix
     view: la.Matrix4f32, // world-to-camera matrix (inverse of transform)
+    h_fov: f32,
+    v_fov: f32, 
     position: la.Vector3f32,
     rotation: la.Quaternionf32,
     axis_locked: bool, // when true, rotation is restricted to yaw (world +Z) and pitch (local +X), no roll
@@ -39,9 +41,17 @@ camera_init :: proc(camera: ^Camera, camera_type: Camera_Type = .Perspective, ax
     camera.pitch_min = la.to_radians(f32(-89))
     camera.pitch_max = la.to_radians(f32(89))
 
+    camera_set_fov_horizontal(camera, 90.0)
     camera_move_up(camera, 5)
 
 }
+
+camera_set_fov_horizontal :: proc(camera:^ Camera, fov_degrees: f32) {
+
+    camera.h_fov = la.to_radians(fov_degrees)
+    camera.v_fov = math.atan(math.tan(camera.h_fov * 0.5) * f32(GLOBALS.window_extent.height) / f32(GLOBALS.window_extent.width))
+}
+
 
 // Enables/disables the 2-axis (yaw/pitch) rotation lock. When enabling, the current
 // orientation's yaw/pitch are extracted (roll is dropped) so the view doesn't snap.

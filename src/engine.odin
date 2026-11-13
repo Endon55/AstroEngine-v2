@@ -146,11 +146,12 @@ GPU_Scene_Data :: struct {
     camera_position: la.Vector3f32,
 }
 
-Compute_Push_Constants :: struct {
-    data1: [4]f32,
-    data2: [4]f32,
-    data3: [4]f32,
-    data4: [4]f32,
+Background_Push_Constants :: struct {
+    horizontal_fov: f32,
+    vertical_fov: f32,
+    draw_extent_x: f32,
+    draw_extent_y: f32,
+    camera_pitch: f32,
 }
 
 Compute_Effect_Kind :: enum {
@@ -161,7 +162,7 @@ Compute_Effect_Kind :: enum {
 Compute_Effect :: struct {
     name:     cstring,
     pipeline: Shader_Pipeline,
-    data:     Compute_Push_Constants,
+    data:     Background_Push_Constants,
 }
 
 @(private)
@@ -187,7 +188,7 @@ engine_update_scene :: proc(self: ^Engine) {
     camera_update_transform(&self.scene.camera)
     self.scene_data.view = self.scene.camera.view
     self.scene_data.proj = matrix4_perspective_reverse_z_f32(
-        f32(la.to_radians(70.0)),
+        f32(self.scene.camera.v_fov),
         aspect,
         0.1,
         true,

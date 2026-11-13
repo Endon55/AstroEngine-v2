@@ -116,6 +116,12 @@ engine_draw_geometry :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool)
 engine_draw_background :: proc(self: ^Engine, cmd: vk.CommandBuffer) -> (ok: bool) {
     effect := &self.background_effect
 
+    effect.data.horizontal_fov = la.to_radians(self.scene.camera.h_fov)
+    effect.data.vertical_fov = self.scene.camera.v_fov
+    effect.data.camera_pitch = self.scene.camera.pitch
+    effect.data.draw_extent_x = f32(self.draw_extent.width)
+    effect.data.draw_extent_y = f32(self.draw_extent.height)
+
     shader_pipeline_bind(&effect.pipeline, cmd, self)
     shader_pipeline_bind_push_constants(&effect.pipeline, cmd, self, &effect.data, {.COMPUTE})
     vk.CmdDispatch(cmd, 

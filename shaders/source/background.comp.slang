@@ -1,9 +1,11 @@
+
+
+
 struct PushConstants
 {
-    float4 data1;
-    float4 data2;
-    float4 data3;
-    float4 data4;
+    float4 fov_extent;
+    float camera_pitch;
+    float h_fov;
 };
 
 [[vk_binding(0,1)]]
@@ -58,13 +60,11 @@ void mainImage(out float4 fragColor, in float2 fragCoord)
     background.GetDimensions(iResolution.x, iResolution.y);
 
     // Sky Background Color
-    // float3 vColor = vec3( 0.1, 0.2, 0.4 ) * fragCoord.y / iResolution.y;
+    float3 vColor = float3( 0.1, 0.2, 0.4 ) * fragCoord.y / iResolution.y;
 
-    float3 vColor = push_constants.data1.xyz * fragCoord.y / iResolution.y;
+    
 
-    // Note: Choose fThreshhold in the range [0.99, 0.9999].
-    // Higher values (i.e., closer to one) yield a sparser starfield.
-    float StarFieldThreshhold = push_constants.data1.w; // 0.97;
+    float StarFieldThreshhold =  0.97;
 
     // Stars with a slow crawl.
     float xRate = 0.2;
@@ -75,7 +75,7 @@ void mainImage(out float4 fragColor, in float2 fragCoord)
 
     fragColor = float4(vColor, 1.0);
 }
-
+static float DEG_TO_RAD = (3.1415 / 180);
 [shader("compute")]
 [numthreads(16, 16, 1)]
 void main(uint3 dispatchThreadID: SV_DispatchThreadID)
@@ -85,13 +85,21 @@ void main(uint3 dispatchThreadID: SV_DispatchThreadID)
     let texelCoord = uint2(dispatchThreadID.xy);
 
     uint2 size;
+    float2 draw_extent = push_constants.fov_extent.za;
+    float2 fov = push_constants.fov_extent.xy;
     background.GetDimensions(size.x, size.y);
+    float half_height = draw_extent.y * 0.5;
+    uint horizon_y = uint(half_height * (1.0 + tan(push_constants.camera_pitch) / tan(fov.y * 0.5)));
 
     if (texelCoord.x < size.x && texelCoord.y < size.y)
     {
-        float4 color;
-        mainImage(color, texelCoord);
+        if(texelCoord.y <= horizon_y) {
+            float4 color;
+            mainImage(color, texelCoord);
+            background[texelCoord] = color;
 
-        background[texelCoord] = color;
+        } else {
+            background[texelCoord] = float4(0.0, 0.03, 0.4, 1.0);
+        }
     }
 }

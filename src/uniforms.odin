@@ -1118,8 +1118,8 @@ graphics_pipeline_builder_set_blend_state :: proc(
 }
 
 graphics_pipeline_builder_enable_blending_additive :: proc(self: ^Graphics_Pipeline_Builder) {
-    self.graphics.color_blend_attachment.colorWriteMask = {.R,.G,.B,.A}
     self.graphics.color_blend_attachment.blendEnable = true
+    self.graphics.color_blend_attachment.colorWriteMask = {.R,.G,.B,.A}
     self.graphics.color_blend_attachment.srcColorBlendFactor = .SRC_ALPHA
     self.graphics.color_blend_attachment.dstColorBlendFactor = .ONE
     self.graphics.color_blend_attachment.colorBlendOp = .ADD
@@ -1128,9 +1128,21 @@ graphics_pipeline_builder_enable_blending_additive :: proc(self: ^Graphics_Pipel
     self.graphics.color_blend_attachment.alphaBlendOp = .ADD
 }
 
-graphics_pipeline_builder_enable_blending_alphablend :: proc(self: ^Graphics_Pipeline_Builder) {
-    self.graphics.color_blend_attachment.colorWriteMask = {.R,.G,.B,.A}
+graphics_pipeline_builder_enable_blending :: proc(self: ^ Graphics_Pipeline_Builder, srcColorBlendFactor, dstColorBlendFactor, srcAlphaBlendFactor, dstAlphaBlendFactor: vk.BlendFactor, colorBlendOp, alphaBlendOp : vk.BlendOp, colorWriteMask :vk.ColorComponentFlags = {.R, .G, .B, .A}) {
     self.graphics.color_blend_attachment.blendEnable = true
+    self.graphics.color_blend_attachment.colorWriteMask = colorWriteMask
+    self.graphics.color_blend_attachment.srcColorBlendFactor = srcColorBlendFactor
+    self.graphics.color_blend_attachment.dstColorBlendFactor = dstColorBlendFactor
+    self.graphics.color_blend_attachment.colorBlendOp = colorBlendOp
+    self.graphics.color_blend_attachment.srcAlphaBlendFactor = srcAlphaBlendFactor
+    self.graphics.color_blend_attachment.dstAlphaBlendFactor = dstAlphaBlendFactor
+    self.graphics.color_blend_attachment.alphaBlendOp = alphaBlendOp
+}
+
+
+graphics_pipeline_builder_enable_blending_alphablend :: proc(self: ^Graphics_Pipeline_Builder) {
+    self.graphics.color_blend_attachment.blendEnable = true
+    self.graphics.color_blend_attachment.colorWriteMask = {.R,.G,.B,.A}
     self.graphics.color_blend_attachment.srcColorBlendFactor = .SRC_ALPHA
     self.graphics.color_blend_attachment.dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA
     self.graphics.color_blend_attachment.colorBlendOp = .ADD
